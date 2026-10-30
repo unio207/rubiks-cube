@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rubik's Cube</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #15171c; color: #ddd; font: 14px system-ui, sans-serif; }
+  #cube { position: fixed; inset: 0; }
+  #bar { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; z-index: 3; }
+  #bar button { background: #2a2e37; color: #eee; border: 1px solid #444a56; border-radius: 6px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  #bar button:hover:not(:disabled) { background: #353a45; }
+  #bar button:disabled { opacity: 0.4; cursor: default; }
+  #bar .sep { width: 1px; height: 24px; background: #3a3f4a; margin: 0 4px; }
+  #hintsBtn.on { background: #24497e; border-color: #3d7bdc; }
+  .tabs { display: flex; }
+  .tabs button { border-radius: 0 !important; }
+  .tabs button:first-child { border-radius: 6px 0 0 6px !important; }
+  .tabs button:last-child { border-radius: 0 6px 6px 0 !important; border-left: none !important; }
+  .tabs button.active { background: #3d7bdc !important; border-color: #3d7bdc !important; color: #fff; }
+  #solved { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); color: #3ddc84; font-size: 22px; font-weight: 600; z-index: 1; pointer-events: none; }
+  #help { position: fixed; bottom: 12px; left: 0; right: 0; text-align: center; color: #8a909c; padding: 0 16px; z-index: 1; pointer-events: none; }
+  .panel { position: fixed; top: 60px; background: rgba(30, 33, 40, 0.92); border: 1px solid #2f343e; border-radius: 10px; padding: 12px 14px; z-index: 2; box-sizing: border-box; }
+  #hints { left: 12px; width: 300px; max-width: calc(100vw - 24px); }
+  #hints .stage { font-weight: 600; font-size: 15px; }
+  #hints .goal { color: #b8bec8; margin: 6px 0; line-height: 1.35; }
+  #hints .case { color: #8fb8ff; margin-bottom: 6px; }
+  #hints .moves { font: 16px ui-monospace, Consolas, monospace; display: flex; flex-wrap: wrap; gap: 2px 7px; }
+  #hints .mv { padding: 1px 3px; border-radius: 4px; }
+  #hints .mv.done { color: #6f7682; }
+  #hints .mv.next { background: #3d7bdc; color: #fff; }
+  #hints .busy { color: #8a909c; }
+  #timer { right: 12px; width: 340px; max-width: calc(100vw - 24px); max-height: calc(100vh - 110px); overflow-y: auto; }
+  #algs { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: #15171c; z-index: 2; }
+  @media (max-width: 760px) {
+    #hints { top: auto; bottom: 40px; }
+    #timer { top: 104px; max-height: 40vh; }
+    #algs { top: 100px; }
+  }
+</style>
+</head>
+<body>
+<div id="cube"></div>
+<div id="bar">
+  <button id="scramble" tabindex="-1">Scramble</button>
+  <button id="solve" tabindex="-1">Solve</button>
+  <button id="reset" tabindex="-1">Reset</button>
+  <span class="sep"></span>
+  <button id="hintsBtn" tabindex="-1">Hints: off</button>
+  <span class="sep"></span>
+  <div class="tabs">
+    <button id="tabCube" class="active" tabindex="-1">Cube</button>
+    <button id="tabAlgs" tabindex="-1">Algorithms</button>
+  </div>
+</div>
+<div id="solved" style="display:none">Solved</div>
+<div id="hints" class="panel" style="display:none"></div>
+<div id="timer" class="panel"></div>
+<div id="algs" style="display:none"></div>
+<div id="help"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!-- INLINE:src/core.js id=src-core -->
+<!-- INLINE:src/solver.js id=src-solver type=text/plain -->
+<!-- INLINE:src/view3d.js -->
+<!-- INLINE:src/baseline.js -->
+<!-- INLINE:src/timer.js -->
+<!-- INLINE:src/algtab.js -->
+<!-- INLINE:src/app.js -->
+</body>
+</html>

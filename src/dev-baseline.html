@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cube Baseline Dev</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #15171c; color: #ddd; font: 14px system-ui, sans-serif; }
+  #cube { position: fixed; inset: 0; }
+  #bar { position: fixed; top: 12px; left: 12px; display: flex; gap: 8px; z-index: 1; }
+  #bar button { background: #2a2e37; color: #eee; border: 1px solid #444a56; border-radius: 6px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  #bar button:hover:not(:disabled) { background: #353a45; }
+  #bar button:disabled { opacity: 0.4; cursor: default; }
+  #solved { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); color: #3ddc84; font-size: 22px; font-weight: 600; z-index: 1; }
+  #help { position: fixed; bottom: 12px; left: 0; right: 0; text-align: center; color: #8a909c; padding: 0 16px; z-index: 1; }
+</style>
+</head>
+<body>
+<div id="cube"></div>
+<div id="bar">
+  <button id="scramble">Scramble</button>
+  <button id="solve">Solve</button>
+  <button id="reset">Reset</button>
+</div>
+<div id="solved">Solved</div>
+<div id="help"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="core.js"></script>
+<script src="view3d.js"></script>
+<script src="baseline.js"></script>
+<script>
+  var app = Baseline.init({
+    container: document.getElementById('cube'),
+    scrambleBtn: document.getElementById('scramble'),
+    solveBtn: document.getElementById('solve'),
+    resetBtn: document.getElementById('reset'),
+    solvedLabel: document.getElementById('solved'),
+    helpEl: document.getElementById('help')
+  });
+  // Console: app.view.selfCheck()
+</script>
+</body>
+</html>

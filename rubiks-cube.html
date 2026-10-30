@@ -1,0 +1,2507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rubik's Cube</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #15171c; color: #ddd; font: 14px system-ui, sans-serif; }
+  #cube { position: fixed; inset: 0; }
+  #bar { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; z-index: 3; }
+  #bar button { background: #2a2e37; color: #eee; border: 1px solid #444a56; border-radius: 6px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  #bar button:hover:not(:disabled) { background: #353a45; }
+  #bar button:disabled { opacity: 0.4; cursor: default; }
+  #bar .sep { width: 1px; height: 24px; background: #3a3f4a; margin: 0 4px; }
+  #hintsBtn.on { background: #24497e; border-color: #3d7bdc; }
+  .tabs { display: flex; }
+  .tabs button { border-radius: 0 !important; }
+  .tabs button:first-child { border-radius: 6px 0 0 6px !important; }
+  .tabs button:last-child { border-radius: 0 6px 6px 0 !important; border-left: none !important; }
+  .tabs button.active { background: #3d7bdc !important; border-color: #3d7bdc !important; color: #fff; }
+  #solved { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); color: #3ddc84; font-size: 22px; font-weight: 600; z-index: 1; pointer-events: none; }
+  #help { position: fixed; bottom: 12px; left: 0; right: 0; text-align: center; color: #8a909c; padding: 0 16px; z-index: 1; pointer-events: none; }
+  .panel { position: fixed; top: 60px; background: rgba(30, 33, 40, 0.92); border: 1px solid #2f343e; border-radius: 10px; padding: 12px 14px; z-index: 2; box-sizing: border-box; }
+  #hints { left: 12px; width: 300px; max-width: calc(100vw - 24px); }
+  #hints .stage { font-weight: 600; font-size: 15px; }
+  #hints .goal { color: #b8bec8; margin: 6px 0; line-height: 1.35; }
+  #hints .case { color: #8fb8ff; margin-bottom: 6px; }
+  #hints .moves { font: 16px ui-monospace, Consolas, monospace; display: flex; flex-wrap: wrap; gap: 2px 7px; }
+  #hints .mv { padding: 1px 3px; border-radius: 4px; }
+  #hints .mv.done { color: #6f7682; }
+  #hints .mv.next { background: #3d7bdc; color: #fff; }
+  #hints .busy { color: #8a909c; }
+  #timer { right: 12px; width: 340px; max-width: calc(100vw - 24px); max-height: calc(100vh - 110px); overflow-y: auto; }
+  #algs { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: #15171c; z-index: 2; }
+  @media (max-width: 760px) {
+    #hints { top: auto; bottom: 40px; }
+    #timer { top: 104px; max-height: 40vh; }
+    #algs { top: 100px; }
+  }
+</style>
+</head>
+<body>
+<div id="cube"></div>
+<div id="bar">
+  <button id="scramble" tabindex="-1">Scramble</button>
+  <button id="solve" tabindex="-1">Solve</button>
+  <button id="reset" tabindex="-1">Reset</button>
+  <span class="sep"></span>
+  <button id="hintsBtn" tabindex="-1">Hints: off</button>
+  <span class="sep"></span>
+  <div class="tabs">
+    <button id="tabCube" class="active" tabindex="-1">Cube</button>
+    <button id="tabAlgs" tabindex="-1">Algorithms</button>
+  </div>
+</div>
+<div id="solved" style="display:none">Solved</div>
+<div id="hints" class="panel" style="display:none"></div>
+<div id="timer" class="panel"></div>
+<div id="algs" style="display:none"></div>
+<div id="help"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script id="src-core">
+// core.js - Rubik's cube logic core (sticker state, moves, algs).
+// Works inlined in a browser (window.Cube) and via require() in Node.
+// See src/CONTRACT.md for the documented API.
+(function (root) {
+  'use strict';
+
+  // Faces in facelet order. Each face has 9 facelets, index = face*9 + row*3 + col.
+  var FACES = ['U', 'R', 'F', 'D', 'L', 'B'];
+  var COLOR_NAME = { U: 'white', R: 'red', F: 'green', D: 'yellow', L: 'orange', B: 'blue' };
+  var COLOR_HEX = { U: 0xffffff, R: 0xc41e3a, F: 0x009e60, D: 0xffd500, L: 0xff5800, B: 0x0051ba };
+  var NORMALS = {
+    U: [0, 1, 0], D: [0, -1, 0], R: [1, 0, 0], L: [-1, 0, 0], F: [0, 0, 1], B: [0, 0, -1]
+  };
+
+  // Cubie position [x, y, z] of facelet (row, col) on a face, as seen looking at that face
+  // (U viewed from above with B at the top, D viewed from below with F at the top,
+  // side faces viewed from outside with U at the top).
+  function faceletPos(face, r, c) {
+    switch (face) {
+      case 'U': return [c - 1, 1, r - 1];
+      case 'D': return [c - 1, -1, 1 - r];
+      case 'F': return [c - 1, 1 - r, 1];
+      case 'B': return [1 - c, 1 - r, -1];
+      case 'R': return [1, 1 - r, 1 - c];
+      case 'L': return [-1, 1 - r, c - 1];
+    }
+  }
+
+  var FACELETS = [];
+  FACES.forEach(function (face) {
+    for (var r = 0; r < 3; r++) {
+      for (var c = 0; c < 3; c++) {
+        FACELETS.push({ face: face, pos: faceletPos(face, r, c), normal: NORMALS[face].slice() });
+      }
+    }
+  });
+
+  function key(pos, normal) { return pos.join(',') + '|' + normal.join(','); }
+  var INDEX_BY_KEY = {};
+  FACELETS.forEach(function (f, i) { INDEX_BY_KEY[key(f.pos, f.normal)] = i; });
+
+  // Index of the facelet at cubie position pos with outward normal, or -1.
+  function faceletIndex(pos, normal) {
+    var i = INDEX_BY_KEY[key(pos, normal)];
+    return i === undefined ? -1 : i;
+  }
+
+  // Rotate integer vector v by q quarter turns about axis ('x'|'y'|'z'), right-hand rule
+  // (positive q = counterclockwise looking from +axis toward the origin).
+  function rotateVec(v, axis, q) {
+    q = ((q % 4) + 4) % 4;
+    var x = v[0], y = v[1], z = v[2], t;
+    for (var i = 0; i < q; i++) {
+      if (axis === 'x') { t = y; y = -z; z = t; }
+      else if (axis === 'y') { t = z; z = -x; x = t; }
+      else { t = x; x = -y; y = t; }
+    }
+    return [x + 0, y + 0, z + 0]; // +0 turns -0 into 0
+  }
+
+  // Base moves: axis, layers (coordinate on that axis), and dir = signed quarter turns
+  // for the plain (clockwise) move, using the right-hand rule above.
+  var ALL = [-1, 0, 1];
+  var BASE = {
+    U: { axis: 'y', layers: [1], dir: -1 },
+    D: { axis: 'y', layers: [-1], dir: 1 },
+    R: { axis: 'x', layers: [1], dir: -1 },
+    L: { axis: 'x', layers: [-1], dir: 1 },
+    F: { axis: 'z', layers: [1], dir: -1 },
+    B: { axis: 'z', layers: [-1], dir: 1 },
+    M: { axis: 'x', layers: [0], dir: 1 },
+    x: { axis: 'x', layers: ALL, dir: -1 },
+    y: { axis: 'y', layers: ALL, dir: -1 },
+    z: { axis: 'z', layers: ALL, dir: -1 },
+    r: { axis: 'x', layers: [0, 1], dir: -1 },
+    l: { axis: 'x', layers: [-1, 0], dir: 1 },
+    u: { axis: 'y', layers: [0, 1], dir: -1 },
+    d: { axis: 'y', layers: [-1, 0], dir: 1 },
+    f: { axis: 'z', layers: [0, 1], dir: -1 },
+    b: { axis: 'z', layers: [-1, 0], dir: 1 }
+  };
+  var AXIS_I = { x: 0, y: 1, z: 2 };
+
+  // PERM[base][i] = where facelet i goes after one plain (clockwise) quarter turn.
+  var PERM = {};
+  Object.keys(BASE).forEach(function (b) {
+    var m = BASE[b], perm = [];
+    FACELETS.forEach(function (f, i) {
+      if (m.layers.indexOf(f.pos[AXIS_I[m.axis]]) < 0) { perm.push(i); return; }
+      perm.push(faceletIndex(rotateVec(f.pos, m.axis, m.dir), rotateVec(f.normal, m.axis, m.dir)));
+    });
+    PERM[b] = perm;
+  });
+
+  function makeMove(base, turns) {
+    var m = BASE[base];
+    var suffix = turns === 2 ? '2' : turns === -1 ? "'" : '';
+    return {
+      name: base + suffix, base: base, turns: turns,
+      axis: m.axis, layers: m.layers.slice(), amount: m.dir * turns
+    };
+  }
+
+  // Parse one move token ("R", "R'", "R2", "R2'" = "R2") or pass a move object through.
+  function parseMove(tok) {
+    if (typeof tok === 'object' && tok) return makeMove(tok.base, tok.turns);
+    var mt = /^([UDLRFBMxyzrlufdb])(2?)('?)$/.exec(String(tok).trim());
+    if (!mt) throw new Error('Bad move: ' + tok);
+    return makeMove(mt[1], mt[2] ? 2 : mt[3] ? -1 : 1);
+  }
+
+  // Parse an alg string (or array of tokens/moves) into an array of move objects.
+  function parseAlg(alg) {
+    if (Array.isArray(alg)) return alg.map(parseMove);
+    var toks = String(alg).replace(/[()]/g, ' ').trim().split(/\s+/).filter(Boolean);
+    return toks.map(parseMove);
+  }
+
+  function invertMove(m) {
+    m = parseMove(m);
+    return makeMove(m.base, m.turns === 2 ? 2 : -m.turns);
+  }
+
+  function invertAlg(alg) { return parseAlg(alg).reverse().map(invertMove); }
+
+  function algToString(alg) { return parseAlg(alg).map(function (m) { return m.name; }).join(' '); }
+
+  function solvedState() {
+    var s = [];
+    FACES.forEach(function (f) { for (var i = 0; i < 9; i++) s.push(f); });
+    return s;
+  }
+
+  function clone(state) { return state.slice(); }
+
+  // Returns a new state; does not mutate the input.
+  function applyMove(state, move) {
+    var m = parseMove(move);
+    var perm = PERM[m.base];
+    var q = ((m.turns % 4) + 4) % 4;
+    var s = state.slice();
+    for (var k = 0; k < q; k++) {
+      var next = new Array(54);
+      for (var i = 0; i < 54; i++) next[perm[i]] = s[i];
+      s = next;
+    }
+    return s;
+  }
+
+  function applyAlg(state, alg) {
+    return parseAlg(alg).reduce(applyMove, state.slice());
+  }
+
+  // Solved in any whole-cube orientation: every face is one color.
+  function isSolved(state) {
+    for (var f = 0; f < 6; f++) {
+      for (var i = 1; i < 9; i++) if (state[f * 9 + i] !== state[f * 9]) return false;
+    }
+    return true;
+  }
+
+  function isEqual(a, b) {
+    for (var i = 0; i < 54; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  // Random scramble as an array of move names.
+  // opts.half: also use ' and 2 suffixes (WCA-ish); default false = quarter turns only.
+  // Never the same face twice in a row; with half, also never A B A on one axis (e.g. R L R).
+  function randomScramble(n, opts) {
+    opts = opts || {};
+    var rnd = opts.random || Math.random;
+    var faces = ['U', 'D', 'L', 'R', 'F', 'B'];
+    var suffixes = opts.half ? ['', "'", '2'] : ['', "'"];
+    var out = [], prev = null, prev2 = null;
+    while (out.length < n) {
+      var f = faces[Math.floor(rnd() * 6)];
+      if (f === prev) continue;
+      if (opts.half && prev2 && BASE[f].axis === BASE[prev].axis && BASE[f].axis === BASE[prev2].axis) continue;
+      out.push(f + suffixes[Math.floor(rnd() * suffixes.length)]);
+      prev2 = prev; prev = f;
+    }
+    return out;
+  }
+
+  // Solve-history helper: returns a new history array (move names) with move appended,
+  // or with the last move removed if move is its inverse (e.g. R then R', or R2 then R2).
+  function pushHistory(history, move) {
+    var m = parseMove(move), h = history.slice();
+    if (h.length) {
+      var last = parseMove(h[h.length - 1]);
+      if (last.base === m.base && ((last.turns + m.turns) % 4 + 4) % 4 === 0) { h.pop(); return h; }
+    }
+    h.push(m.name);
+    return h;
+  }
+
+  // ---- Algorithms (spec Feature 2). Algs assume CFOP hold: cross color on D. ----
+  var ALGS = [
+    { id: 'f2l-1', name: 'Corner white front, edge UR', group: 'F2L', target: 'slotFR', alg: "U R U' R'",
+      hint: 'Corner at UFR with white facing front; edge at UR.' },
+    { id: 'f2l-2', name: 'Corner white right, edge UF', group: 'F2L', target: 'slotFR', alg: "U' F' U F",
+      hint: 'Corner at UFR with white facing right; edge at UF.' },
+    { id: 'f2l-3', name: 'Corner white right, edge UB', group: 'F2L', target: 'slotFR', alg: "R U R'",
+      hint: 'Corner at UFR with white facing right; edge at UB.' },
+    { id: 'f2l-4', name: 'Corner white front, edge UL', group: 'F2L', target: 'slotFR', alg: "F' U' F",
+      hint: 'Corner at UFR with white facing front; edge at UL.' },
+    { id: 'oll-line', name: 'Line', group: 'OLL edges', target: 'uFace', alg: "F R U R' U' F'",
+      hint: 'Yellow line on top, hold it horizontal (UL-UR).' },
+    { id: 'oll-l', name: 'L', group: 'OLL edges', target: 'uFace', alg: "f R U R' U' f'",
+      hint: 'Yellow L on top, hold it at front-right (UF and UR).' },
+    { id: 'oll-dot', name: 'Dot', group: 'OLL edges', target: 'uFace', alg: "F R U R' U' F' f R U R' U' f'",
+      hint: 'No yellow edges on top.' },
+    { id: 'oll-sune', name: 'Sune', group: 'OLL corners', target: 'uFace', alg: "R U R' U R U2 R'",
+      hint: 'One yellow corner on top; put it at UFL.' },
+    { id: 'oll-antisune', name: 'Antisune', group: 'OLL corners', target: 'uFace', alg: "R U2 R' U' R U' R'",
+      hint: 'One yellow corner on top; put it at UBR.' },
+    { id: 'oll-h', name: 'H', group: 'OLL corners', target: 'uFace', alg: "R U R' U R U' R' U R U2 R'",
+      hint: 'No yellow corners on top; yellow pairs face left and right.' },
+    { id: 'oll-pi', name: 'Pi', group: 'OLL corners', target: 'uFace', alg: "R U2 R2 U' R2 U' R2 U2 R",
+      hint: 'No yellow corners on top; yellow pair on the left side.' },
+    { id: 'oll-headlights', name: 'Headlights', group: 'OLL corners', target: 'uFace', alg: "R2 D R' U2 R D' R' U2 R'",
+      hint: 'Two adjacent yellow corners on top; headlights face front.' },
+    { id: 'oll-chameleon', name: 'Chameleon', group: 'OLL corners', target: 'uFace', alg: "r U R' U' r' F R F'",
+      hint: 'Two adjacent yellow corners on top (at the right); the left corners have yellow facing front and back.' },
+    { id: 'oll-bowtie', name: 'Bowtie', group: 'OLL corners', target: 'uFace', alg: "F' r U R' U' r' F R",
+      hint: 'Two diagonal yellow corners on top, at UFL and UBR.' },
+    { id: 'pll-t', name: 'Adjacent swap (T)', group: 'PLL corners', target: 'cube', alg: "R U R' U' R' F R2 U' R' U' R U R' F'",
+      hint: 'Headlights on one side; put them on the left.' },
+    { id: 'pll-y', name: 'Diagonal swap (Y)', group: 'PLL corners', target: 'cube', alg: "F R U' R' U' R U R' F' R U R' U' R' F R F'",
+      hint: 'No headlights anywhere.' },
+    { id: 'pll-ua', name: 'Ua', group: 'PLL edges', target: 'cube', alg: "R U' R U R U R U' R' U' R2",
+      hint: 'Three edges cycle; solved side at the back.' },
+    { id: 'pll-ub', name: 'Ub', group: 'PLL edges', target: 'cube', alg: "R2 U R U R' U' R' U' R' U R'",
+      hint: 'Three edges cycle; solved side at the back.' },
+    { id: 'pll-h', name: 'H', group: 'PLL edges', target: 'cube', alg: 'M2 U M2 U2 M2 U M2',
+      hint: 'Opposite edges swap on both axes.' },
+    { id: 'pll-z', name: 'Z', group: 'PLL edges', target: 'cube', alg: "M' U M2 U M2 U M' U2 M2",
+      hint: 'Adjacent edges swap in two pairs; hold so the pairs are front-right and back-left.' }
+  ];
+
+  // Solved cube in CFOP hold: white (cross) on D, yellow on U, green F.
+  function solvedCfop() { return applyAlg(solvedState(), 'z2'); }
+
+  // Case state for an alg: CFOP-hold solved cube with the inverse of the alg applied.
+  function caseState(alg) { return applyAlg(solvedCfop(), invertAlg(alg)); }
+
+  function centerColor(state, face) { return state[FACES.indexOf(face) * 9 + 4]; }
+  function at(state, pos, normal) { return state[faceletIndex(pos, normal)]; }
+
+  // Do all stickers of the given cubies match the center of the face they point at?
+  function cubiesSolved(state, positions) {
+    return positions.every(function (p) {
+      return FACELETS.every(function (f, i) {
+        if (f.pos.join() !== p.join()) return true;
+        return state[i] === centerColor(state, f.face);
+      });
+    });
+  }
+
+  var CROSS = [[0, -1, 1], [1, -1, 0], [0, -1, -1], [-1, -1, 0]];
+  var SLOT_FR = [[1, -1, 1], [1, 0, 1]];
+  var F2L_ALL = [];
+  [-1, 0].forEach(function (y) {
+    for (var x = -1; x <= 1; x++) for (var z = -1; z <= 1; z++) F2L_ALL.push([x, y, z]);
+  });
+
+  // Target checks used by alg verification (relative to current centers).
+  function targetSolved(state, target) {
+    if (target === 'slotFR') return cubiesSolved(state, CROSS.concat(SLOT_FR));
+    if (target === 'uFace') {
+      if (!cubiesSolved(state, F2L_ALL)) return false;
+      var u = centerColor(state, 'U');
+      for (var i = 0; i < 9; i++) if (state[i] !== u) return false;
+      return true;
+    }
+    if (target === 'cube') return isSolved(state);
+    throw new Error('Unknown target: ' + target);
+  }
+
+  // Starting from its own case state, does the alg leave its target solved (allowing one final U)?
+  function verifyAlg(a) {
+    var s = applyAlg(caseState(a.alg), a.alg);
+    return ['', 'U', "U'", 'U2'].some(function (auf) {
+      return targetSolved(auf ? applyMove(s, auf) : s, a.target);
+    });
+  }
+
+  var Cube = {
+    FACES: FACES, COLOR_NAME: COLOR_NAME, COLOR_HEX: COLOR_HEX, NORMALS: NORMALS,
+    FACELETS: FACELETS, BASE_MOVES: BASE, ALGS: ALGS,
+    faceletIndex: faceletIndex, rotateVec: rotateVec, at: at, centerColor: centerColor,
+    parseMove: parseMove, parseAlg: parseAlg, invertMove: invertMove, invertAlg: invertAlg,
+    algToString: algToString,
+    solvedState: solvedState, solvedCfop: solvedCfop, clone: clone, isEqual: isEqual,
+    applyMove: applyMove, applyAlg: applyAlg, isSolved: isSolved,
+    randomScramble: randomScramble, pushHistory: pushHistory,
+    caseState: caseState, cubiesSolved: cubiesSolved, targetSolved: targetSolved, verifyAlg: verifyAlg
+  };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = Cube;
+  else root.Cube = Cube;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script id="src-solver" type="text/plain">
+// solver.js - CFOP hint engine (spec Feature 1 logic, no DOM).
+// Browser / Web Worker: needs Cube (core.js) loaded first, defines Solver on the global object.
+// Node: require('./src/solver.js') returns the same object.
+//
+// getHint(state) returns
+//   { stage, stageName, goal, caseName, moves, setup, alg, pair }
+// stage is 1..8 in spec order (0 = already solved). moves is an array of move names that,
+// played in order, completes the current stage (or the next F2L pair).
+(function (root) {
+  'use strict';
+
+  var Cube = (typeof module !== 'undefined' && module.exports) ? require('./core.js') : root.Cube;
+
+  var STAGE_NAMES = ['Solved', 'Orientation', 'Cross', 'F2L', 'OLL edges', 'OLL corners',
+    'PLL corners', 'PLL edges', 'AUF'];
+  var FACE_MOVES = [];
+  'UDRLFB'.split('').forEach(function (f) { FACE_MOVES.push(f, f + "'", f + '2'); });
+  var U_TURNS = ['', 'U', "U'", 'U2'];
+
+  // ---- Facelet bookkeeping ----
+  var FL = Cube.FACELETS;
+  function nonzero(p) { return (p[0] !== 0) + (p[1] !== 0) + (p[2] !== 0); }
+  var EDGE_FL = [], CORNER_FL = [];      // 54-index of each edge / corner facelet
+  FL.forEach(function (f, i) {
+    if (nonzero(f.pos) === 2) EDGE_FL.push(i);
+    if (nonzero(f.pos) === 3) CORNER_FL.push(i);
+  });
+  var EDGE_SLOT = {}, CORNER_SLOT = {};  // 54-index -> 0..23
+  EDGE_FL.forEach(function (i, k) { EDGE_SLOT[i] = k; });
+  CORNER_FL.forEach(function (i, k) { CORNER_SLOT[i] = k; });
+
+  function idx(pos, face) { return Cube.faceletIndex(pos, Cube.NORMALS[face]); }
+  // All facelet indices of the cubie at pos.
+  function cubieFacelets(pos) {
+    var out = [];
+    FL.forEach(function (f, i) { if (f.pos.join() === pos.join()) out.push(i); });
+    return out;
+  }
+
+  // Where each facelet goes under a move sequence: to[i] = new index of the sticker at i.
+  var ID = []; for (var i = 0; i < 54; i++) ID.push(i);
+  function faceletMap(alg) {
+    var s = Cube.applyAlg(ID, alg), to = new Array(54);
+    for (var j = 0; j < 54; j++) to[s[j]] = j;
+    return to;
+  }
+  function slotTables(alg) {
+    var to = faceletMap(alg), e = new Uint8Array(24), c = new Uint8Array(24);
+    EDGE_FL.forEach(function (i, k) { e[k] = EDGE_SLOT[to[i]]; });
+    CORNER_FL.forEach(function (i, k) { c[k] = CORNER_SLOT[to[i]]; });
+    return { e: e, c: c };
+  }
+
+  // ---- Cross / F2L geometry (cross on D, slots named by their side faces) ----
+  var SIDES = ['F', 'R', 'B', 'L'];
+  var CROSS_POS = SIDES.map(function (f) { var n = Cube.NORMALS[f]; return [n[0], -1, n[2]]; });
+  // Cross edge k: home of its D-colored sticker.
+  var CROSS_HOME = CROSS_POS.map(function (p) { return EDGE_SLOT[idx(p, 'D')]; });
+
+  var PAIRS = [['F', 'R'], ['R', 'B'], ['B', 'L'], ['L', 'F']].map(function (ab) {
+    var na = Cube.NORMALS[ab[0]], nb = Cube.NORMALS[ab[1]];
+    var x = na[0] + nb[0], z = na[2] + nb[2];
+    return {
+      name: ab[0] + ab[1], a: ab[0], b: ab[1],
+      cornerPos: [x, -1, z], edgePos: [x, 0, z],
+      cornerHome: CORNER_SLOT[idx([x, -1, z], 'D')],   // D-colored sticker of the corner
+      edgeHome: EDGE_SLOT[idx([x, 0, z], ab[0])]       // a-colored sticker of the edge
+    };
+  });
+
+  // Locate the facelet holding the sticker of color `want` on the piece whose colors are `colors`.
+  function findSticker(state, list, size, colors, want) {
+    for (var p = 0; p < list.length; p++) {
+      var fs = list[p], cs = fs.map(function (i) { return state[i]; });
+      if (cs.length !== size) continue;
+      var ok = colors.every(function (c) { return cs.indexOf(c) >= 0; });
+      if (ok) return fs[cs.indexOf(want)];
+    }
+    return -1;
+  }
+  var EDGE_CUBIES = [], CORNER_CUBIES = [];
+  (function () {
+    for (var x = -1; x <= 1; x++) for (var y = -1; y <= 1; y++) for (var z = -1; z <= 1; z++) {
+      var n = nonzero([x, y, z]);
+      if (n === 2) EDGE_CUBIES.push(cubieFacelets([x, y, z]));
+      if (n === 3) CORNER_CUBIES.push(cubieFacelets([x, y, z]));
+    }
+  })();
+
+  function crossSlots(state) {
+    var d = Cube.centerColor(state, 'D');
+    return SIDES.map(function (f) {
+      return EDGE_SLOT[findSticker(state, EDGE_CUBIES, 2, [d, Cube.centerColor(state, f)], d)];
+    });
+  }
+  function pairSlots(state, pair) {
+    var d = Cube.centerColor(state, 'D'), a = Cube.centerColor(state, pair.a), b = Cube.centerColor(state, pair.b);
+    return {
+      c: CORNER_SLOT[findSticker(state, CORNER_CUBIES, 3, [d, a, b], d)],
+      e: EDGE_SLOT[findSticker(state, EDGE_CUBIES, 2, [a, b], a)]
+    };
+  }
+
+  function crossDone(state) { return Cube.cubiesSolved(state, CROSS_POS); }
+  function pairDone(state, pair) { return Cube.cubiesSolved(state, [pair.cornerPos, pair.edgePos]); }
+  function f2lDone(state) { return crossDone(state) && PAIRS.every(function (p) { return pairDone(state, p); }); }
+  function uEdgesDone(state) { var u = state[4]; return state[1] === u && state[3] === u && state[5] === u && state[7] === u; }
+  function uFaceDone(state) { for (var k = 0; k < 9; k++) if (state[k] !== state[4]) return false; return true; }
+  var U_CORNERS = [[1, 1, 1], [1, 1, -1], [-1, 1, 1], [-1, 1, -1]];
+  function aufFor(state, test) {
+    for (var k = 0; k < 4; k++) {
+      if (test(U_TURNS[k] ? Cube.applyMove(state, U_TURNS[k]) : state)) return U_TURNS[k];
+    }
+    return null;
+  }
+  function cornersPermuted(s) { return aufFor(s, function (t) { return Cube.cubiesSolved(t, U_CORNERS); }) !== null; }
+  function solvedUpToU(s) { return aufFor(s, Cube.isSolved) !== null; }
+
+  // ---- Tables (built once, lazily) ----
+  var T = null;
+  function init() {
+    if (T) return;
+    T = {};
+    T.moves = FACE_MOVES.map(slotTables);
+
+    // Cross: exact distance table over the 4 cross edges (24^4 encodings), BFS with face moves.
+    var N = 331776, dist = new Int8Array(N).fill(-1);
+    var h = CROSS_HOME, start = ((h[0] * 24 + h[1]) * 24 + h[2]) * 24 + h[3];
+    var queue = new Int32Array(190080), qh = 0, qt = 0;
+    dist[start] = 0; queue[qt++] = start;
+    while (qh < qt) {
+      var code = queue[qh++], d = dist[code];
+      var s3 = code % 24, s2 = (code / 24 | 0) % 24, s1 = (code / 576 | 0) % 24, s0 = code / 13824 | 0;
+      for (var m = 0; m < 18; m++) {
+        var e = T.moves[m].e;
+        var n = ((e[s0] * 24 + e[s1]) * 24 + e[s2]) * 24 + e[s3];
+        if (dist[n] < 0) { dist[n] = d + 1; queue[qt++] = n; }
+      }
+    }
+    T.crossDist = dist;
+
+    // F2L macros: U turns and X U^k X^-1 for each side face X. Every macro keeps the cross.
+    var macros = [{ moves: ['U'], fam: 'U' }, { moves: ["U'"], fam: 'U' }, { moves: ['U2'], fam: 'U' }];
+    SIDES.forEach(function (f) {
+      [[f, f + "'"], [f + "'", f]].forEach(function (pr) {
+        ['U', "U'", 'U2'].forEach(function (u) {
+          macros.push({ moves: [pr[0], u, pr[1]], fam: pr[0] });
+        });
+      });
+    });
+    macros.forEach(function (mc) { var t = slotTables(mc.moves); mc.e = t.e; mc.c = t.c; });
+    T.macros = macros;
+
+    // Per-pair macro distance (pair pieces alone), BFS over 24*24 states.
+    T.pairDist = PAIRS.map(function (p) {
+      var pd = new Int8Array(576).fill(-1), q = [p.cornerHome * 24 + p.edgeHome];
+      pd[q[0]] = 0;
+      for (var k = 0; k < q.length; k++) {
+        var c = q[k] / 24 | 0, ed = q[k] % 24;
+        macros.forEach(function (mc) {
+          var nx = mc.c[c] * 24 + mc.e[ed];
+          if (pd[nx] < 0) { pd[nx] = pd[q[k]] + 1; q.push(nx); }
+        });
+      }
+      return pd;
+    });
+  }
+
+  // ---- Stage solvers ----
+  function solveCross(state) {
+    var s = crossSlots(state), out = [];
+    var code = ((s[0] * 24 + s[1]) * 24 + s[2]) * 24 + s[3];
+    var d = T.crossDist[code];
+    while (d > 0) {
+      for (var m = 0; m < 18; m++) {
+        var e = T.moves[m].e;
+        var n0 = e[s[0]], n1 = e[s[1]], n2 = e[s[2]], n3 = e[s[3]];
+        var nc = ((n0 * 24 + n1) * 24 + n2) * 24 + n3;
+        if (T.crossDist[nc] === d - 1) { out.push(FACE_MOVES[m]); s = [n0, n1, n2, n3]; d--; break; }
+      }
+    }
+    return out;
+  }
+
+  // Merge adjacent turns of the same face (R' R' -> R2, R R' -> nothing).
+  function simplify(moves) {
+    var out = [];
+    moves.forEach(function (mv) {
+      var m = Cube.parseMove(mv), last = out.length ? Cube.parseMove(out[out.length - 1]) : null;
+      if (last && last.base === m.base) {
+        out.pop();
+        var t = (((last.turns + m.turns) % 4) + 4) % 4;
+        if (t) out.push(m.base + (t === 2 ? '2' : t === 3 ? "'" : ''));
+      } else out.push(m.name);
+    });
+    return out;
+  }
+
+  // IDA* over macros: bring `pair` home while every pair in `keep` stays home.
+  var MAX_MACROS = 9, NODE_LIMIT = 300000;
+  function solvePair(state, pi, keep) {
+    var pieces = [pi].concat(keep).map(function (k) {
+      var s = pairSlots(state, PAIRS[k]); return { k: k, c: s.c, e: s.e };
+    });
+    var cs = pieces.map(function (p) { return p.c; }), es = pieces.map(function (p) { return p.e; });
+    var tables = pieces.map(function (p) { return T.pairDist[p.k]; });
+    var M = T.macros, path = [], nodes = 0, np = pieces.length;
+
+    function h(c, e) {
+      var best = 0;
+      for (var j = 0; j < np; j++) { var v = tables[j][c[j] * 24 + e[j]]; if (v > best) best = v; }
+      return best;
+    }
+    function dfs(c, e, g, bound, lastFam) {
+      var hv = h(c, e);
+      if (hv === 0) return true;
+      if (g + hv > bound || ++nodes > NODE_LIMIT) return false;
+      for (var m = 0; m < M.length; m++) {
+        var mc = M[m];
+        if (mc.fam === lastFam) continue;  // U U, or X U^a X' X U^b X' (same as one macro)
+        var nc = new Array(np), ne = new Array(np);
+        for (var j = 0; j < np; j++) { nc[j] = mc.c[c[j]]; ne[j] = mc.e[e[j]]; }
+        path.push(m);
+        if (dfs(nc, ne, g + 1, bound, mc.fam)) return true;
+        path.pop();
+      }
+      return false;
+    }
+    for (var bound = h(cs, es); bound <= MAX_MACROS; bound++) {
+      path = [];
+      if (dfs(cs, es, 0, bound, null)) {
+        var moves = [];
+        path.forEach(function (m) { moves = moves.concat(M[m].moves); });
+        return simplify(moves);
+      }
+      if (nodes > NODE_LIMIT) break;
+    }
+    return null;
+  }
+
+  function f2lCaseName(moves) {
+    var str = moves.join(' ');
+    for (var k = 0; k < 4; k++) {
+      var a = Cube.ALGS[k];
+      if (str === a.alg) return a.name;
+      for (var u = 1; u < 4; u++) {
+        if (str === U_TURNS[u] + ' ' + a.alg) return a.name;
+      }
+    }
+    return null;
+  }
+
+  function solveF2L(state) {
+    var solved = [], open = [];
+    PAIRS.forEach(function (p, k) { (pairDone(state, p) ? solved : open).push(k); });
+    var best = null;
+    open.forEach(function (k) {
+      var mv = solvePair(state, k, solved);
+      if (mv && (!best || mv.length < best.moves.length)) best = { k: k, moves: mv };
+    });
+    if (!best) throw new Error('F2L search failed');
+    return best;
+  }
+
+  // Last layer: try each U setup with each alg of the group; chain two steps if one is not enough.
+  function algsOf(group) { return Cube.ALGS.filter(function (a) { return a.group === group; }); }
+  function llStep(state, group, goal, only) {
+    var algs = algsOf(group).filter(function (a) { return !only || a.id === only; });
+    var steps = [];
+    U_TURNS.forEach(function (u) {
+      algs.forEach(function (a) { steps.push({ setup: u, alg: a }); });
+    });
+    function run(s, st) { return Cube.applyAlg(st.setup ? Cube.applyMove(s, st.setup) : s, st.alg.alg); }
+    function seq(st) { return (st.setup ? [st.setup] : []).concat(Cube.algToString(st.alg.alg).split(' ')); }
+    for (var a = 0; a < steps.length; a++) {
+      if (goal(run(state, steps[a]))) return { setup: steps[a].setup, alg: steps[a].alg, moves: seq(steps[a]) };
+    }
+    for (a = 0; a < steps.length; a++) {
+      var mid = run(state, steps[a]);
+      for (var b = 0; b < steps.length; b++) {
+        if (goal(run(mid, steps[b]))) {
+          return { setup: steps[a].setup, alg: steps[a].alg, moves: seq(steps[a]).concat(seq(steps[b])) };
+        }
+      }
+    }
+    throw new Error('No ' + group + ' alg sequence found');
+  }
+
+  function ollEdgeCase(state) {
+    var u = state[4], up = [state[1] === u, state[5] === u, state[7] === u, state[3] === u]; // B R F L
+    var n = up.filter(Boolean).length;
+    if (n === 0) return 'oll-dot';
+    if ((up[0] && up[2]) || (up[1] && up[3])) return 'oll-line';
+    return 'oll-l';
+  }
+
+  var GOALS = {
+    1: 'Turn the whole cube so the white center is on the bottom (D).',
+    2: 'Make the white cross on the bottom: each white edge on D, its other color matching the side center.',
+    3: 'Pair up a white corner with its edge and insert them into their slot without breaking the cross or other pairs.',
+    4: 'Make a yellow cross on top (orient the top edges).',
+    5: 'Make the whole top face yellow (orient the top corners).',
+    6: 'Put the top corners in their correct places relative to each other.',
+    7: 'Put the top edges in place so the cube is solved except for a U turn.',
+    8: 'Turn the top layer to finish the solve.'
+  };
+
+  function hint(stage, moves, extra) {
+    var out = { stage: stage, stageName: STAGE_NAMES[stage], goal: GOALS[stage] || 'The cube is solved.',
+      caseName: null, moves: moves, setup: null, alg: null, pair: null };
+    for (var k in extra) out[k] = extra[k];
+    return out;
+  }
+
+  function getHint(state) {
+    init();
+    if (Cube.isSolved(state)) return hint(0, []);
+
+    // 1. Orientation
+    var white = 'U';
+    if (state[31] !== white) {
+      var rots = ['z2', 'x', "x'", 'z', "z'", 'x2'];
+      for (var r = 0; r < rots.length; r++) {
+        if (Cube.applyMove(state, rots[r])[31] === white) return hint(1, [rots[r]]);
+      }
+    }
+    // 2. Cross
+    if (!crossDone(state)) return hint(2, solveCross(state));
+    // 3. F2L
+    if (!f2lDone(state)) {
+      var f = solveF2L(state), p = PAIRS[f.k];
+      var g = 'Insert the ' + p.name + ' pair: the ' + Cube.COLOR_NAME[Cube.centerColor(state, p.a)] + '-' +
+        Cube.COLOR_NAME[Cube.centerColor(state, p.b)] + ' edge and its white corner.';
+      return hint(3, f.moves, { goal: g, pair: p.name, caseName: f2lCaseName(f.moves) });
+    }
+    var st;
+    // 4. OLL edges
+    if (!uEdgesDone(state)) {
+      st = llStep(state, 'OLL edges', function (s) { return uEdgesDone(s) && f2lDone(s); }, ollEdgeCase(state));
+      return hint(4, st.moves, { caseName: st.alg.name, setup: st.setup || null, alg: st.alg.alg });
+    }
+    // 5. OLL corners
+    if (!uFaceDone(state)) {
+      st = llStep(state, 'OLL corners', function (s) { return uFaceDone(s) && f2lDone(s); });
+      return hint(5, st.moves, { caseName: st.alg.name, setup: st.setup || null, alg: st.alg.alg });
+    }
+    // 6. PLL corners
+    if (!cornersPermuted(state)) {
+      st = llStep(state, 'PLL corners', function (s) { return uFaceDone(s) && f2lDone(s) && cornersPermuted(s); });
+      return hint(6, st.moves, { caseName: st.alg.name, setup: st.setup || null, alg: st.alg.alg });
+    }
+    // 7. PLL edges
+    if (!solvedUpToU(state)) {
+      st = llStep(state, 'PLL edges', solvedUpToU);
+      return hint(7, st.moves, { caseName: st.alg.name, setup: st.setup || null, alg: st.alg.alg });
+    }
+    // 8. AUF
+    return hint(8, [aufFor(state, Cube.isSolved)]);
+  }
+
+  var Solver = { init: init, getHint: getHint, STAGE_NAMES: STAGE_NAMES };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = Solver;
+  else root.Solver = Solver;
+})(typeof self !== 'undefined' ? self : (typeof globalThis !== 'undefined' ? globalThis : this));
+
+</script>
+<script>
+// view3d.js - Three.js r128 cube renderer (main cube and mini cubes).
+// Browser: defines window.CubeView (needs global THREE and window.Cube).
+// Node: require('./src/view3d.js') gives the pure mapping helpers only (no THREE needed).
+(function (root) {
+  'use strict';
+
+  var Cube = root.Cube || (typeof require === 'function' ? require('./core.js') : null);
+  var AXIS_I = { x: 0, y: 1, z: 2 };
+  var IDENTITY = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+
+  // ---------------------------------------------------------------------------
+  // Pure mapping helpers. A "model" is 27 cubie records:
+  //   { home:[x,y,z], pos:[x,y,z], rot:3x3 int matrix (rows), stickers:[{local:[nx,ny,nz], color}] }
+  // A sticker's world normal is rot * local; with pos it names one core facelet.
+  // ---------------------------------------------------------------------------
+
+  // Integer rotation matrix for q quarter turns about axis (same convention as Cube.rotateVec
+  // and as a Three.js rotation of q*PI/2). Columns are the rotated basis vectors.
+  function rotationMatrix(axis, q) {
+    var cols = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].map(function (e) { return Cube.rotateVec(e, axis, q); });
+    return [0, 1, 2].map(function (r) { return [cols[0][r], cols[1][r], cols[2][r]]; });
+  }
+
+  function mulMat(a, b) {
+    return [0, 1, 2].map(function (r) {
+      return [0, 1, 2].map(function (c) { return a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c]; });
+    });
+  }
+
+  function mulVec(m, v) {
+    return [0, 1, 2].map(function (r) { return m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2] + 0; });
+  }
+
+  // Round a column-major 4x4 element array (Three.js Matrix4.elements) to an integer 3x3 rotation.
+  function snapRotation(elements) {
+    return [0, 1, 2].map(function (r) {
+      return [0, 1, 2].map(function (c) { return Math.round(elements[c * 4 + r]) + 0; });
+    });
+  }
+
+  function cubiePositions() {
+    var out = [];
+    for (var x = -1; x <= 1; x++) for (var y = -1; y <= 1; y++) for (var z = -1; z <= 1; z++) out.push([x, y, z]);
+    return out;
+  }
+
+  // Model with every cubie at home, identity rotation, sticker colors read from a core state.
+  function createModel(state) {
+    return cubiePositions().map(function (p) {
+      var stickers = [];
+      ['x', 'y', 'z'].forEach(function (a, i) {
+        if (p[i] === 0) return;
+        var n = [0, 0, 0]; n[i] = p[i];
+        stickers.push({ local: n, color: state[Cube.faceletIndex(p, n)] });
+      });
+      return { home: p.slice(), pos: p.slice(), rot: IDENTITY.map(function (r) { return r.slice(); }), stickers: stickers };
+    });
+  }
+
+  function inLayer(pos, move) { return move.layers.indexOf(pos[AXIS_I[move.axis]]) >= 0; }
+
+  // Turn the model in place with integer math (used by tests; the browser snaps from Three instead).
+  function applyMoveToModel(model, move) {
+    move = Cube.parseMove(move);
+    var R = rotationMatrix(move.axis, move.amount);
+    model.forEach(function (c) {
+      if (!inLayer(c.pos, move)) return;
+      c.pos = mulVec(R, c.pos);
+      c.rot = mulMat(R, c.rot);
+    });
+    return model;
+  }
+
+  // Read the 54-sticker core state back out of a model.
+  function deriveState(model) {
+    var s = new Array(54);
+    model.forEach(function (c) {
+      c.stickers.forEach(function (st) {
+        var i = Cube.faceletIndex(c.pos, mulVec(c.rot, st.local));
+        if (i < 0) throw new Error('view mapping: sticker off the cube at ' + c.pos + ' ' + st.local);
+        s[i] = st.color;
+      });
+    });
+    return s;
+  }
+
+  var mapping = {
+    rotationMatrix: rotationMatrix, snapRotation: snapRotation, createModel: createModel,
+    applyMoveToModel: applyMoveToModel, deriveState: deriveState, mulVec: mulVec, mulMat: mulMat
+  };
+
+  // ---------------------------------------------------------------------------
+  // Three.js view (browser only).
+  // ---------------------------------------------------------------------------
+  var SPACING = 1;
+  var BODY = 0.96;          // cubie body size
+  var STICKER = 0.8;        // sticker size (inset from the body edge)
+  var STICKER_OFF = BODY / 2 + 0.002;
+  var Z_AXIS = [0, 0, 1];
+
+  function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
+
+  // opts:
+  //   interactive  drag to orbit (default true)
+  //   width/height fixed pixel size; omit to fill the container and follow resizes
+  //   duration     ms per turn (default 160); fastDuration ms per turn when {fast} (default 45)
+  //   background   clear color (default 0x15171c); null = transparent
+  //   distance     camera distance (default 9); theta/phi initial view angles in radians
+  //   state        initial core state (default Cube.solvedState())
+  //   onMoveDone   function (move, state) called after each turn finishes
+  function createCubeView(container, opts) {
+    opts = opts || {};
+    var THREE = root.THREE;
+    if (!THREE) throw new Error('createCubeView: THREE is not loaded');
+    var duration = opts.duration || 160;
+    var fastDuration = opts.fastDuration || 45;
+    var interactive = opts.interactive !== false;
+    var fixedSize = opts.width && opts.height;
+    var bg = opts.background === undefined ? 0x15171c : opts.background;
+
+    var renderer = new THREE.WebGLRenderer({ antialias: true, alpha: bg === null });
+    renderer.setPixelRatio(Math.min(root.devicePixelRatio || 1, 2));
+    if (bg === null) renderer.setClearColor(0x000000, 0); else renderer.setClearColor(bg, 1);
+    container.appendChild(renderer.domElement);
+    renderer.domElement.style.display = 'block';
+    if (interactive) { renderer.domElement.style.touchAction = 'none'; renderer.domElement.style.cursor = 'grab'; }
+
+    var scene = new THREE.Scene();
+    var camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    var light = new THREE.DirectionalLight(0xffffff, 0.75);
+    scene.add(light);
+
+    var cubeRoot = new THREE.Group();
+    var pivot = new THREE.Group();
+    scene.add(cubeRoot);
+    cubeRoot.add(pivot);
+
+    // Shared geometry/materials; one material per sticker so colors can change.
+    var bodyGeo = new THREE.BoxGeometry(BODY, BODY, BODY);
+    var bodyMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+    var stickerGeo = new THREE.PlaneGeometry(STICKER, STICKER);
+    var materials = [bodyMat];
+
+    // records: { obj, pos, rot, stickers:[{ local, color, mesh }] } - same shape as the pure model.
+    var records = createModel(Cube.solvedState()).map(function (c) {
+      var obj = new THREE.Group();
+      obj.add(new THREE.Mesh(bodyGeo, bodyMat));
+      c.stickers.forEach(function (st) {
+        var mat = new THREE.MeshLambertMaterial({ color: 0x000000, side: THREE.FrontSide });
+        materials.push(mat);
+        var mesh = new THREE.Mesh(stickerGeo, mat);
+        var n = new THREE.Vector3(st.local[0], st.local[1], st.local[2]);
+        mesh.position.copy(n).multiplyScalar(STICKER_OFF);
+        mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+        obj.add(mesh);
+        st.mesh = mesh;
+      });
+      cubeRoot.add(obj);
+      c.obj = obj;
+      return c;
+    });
+
+    var state;            // core state, updated on every completed turn
+    var queue = [];       // pending { move, fast }
+    var current = null;   // { move, fast, start, dur, objs }
+    var dirty = true;
+    var disposed = false;
+    var highlight = null;
+
+    var view = {
+      onMoveDone: opts.onMoveDone || null,
+      setState: setState,
+      getState: function () { return state.slice(); },
+      getViewState: function () { return deriveState(records); },
+      enqueue: enqueue,
+      isIdle: function () { return !current && queue.length === 0; },
+      clearQueue: function () { queue = []; },
+      highlightLayer: highlightLayer,
+      selfCheck: selfCheck,
+      resize: resize,
+      dispose: dispose,
+      canvas: renderer.domElement
+    };
+
+    // Set an object's Three transform from an integer pos/rot.
+    function placeObj(rec) {
+      rec.obj.position.set(rec.pos[0] * SPACING, rec.pos[1] * SPACING, rec.pos[2] * SPACING);
+      var r = rec.rot, m = new THREE.Matrix4();
+      m.set(r[0][0], r[0][1], r[0][2], 0, r[1][0], r[1][1], r[1][2], 0, r[2][0], r[2][1], r[2][2], 0, 0, 0, 0, 1);
+      rec.obj.quaternion.setFromRotationMatrix(m);
+    }
+
+    // Instantly show a core state: all cubies back home, stickers recolored. Drops any queue/animation.
+    function setState(s) {
+      state = s.slice();
+      queue = [];
+      if (current) { current.objs.forEach(function (o) { cubeRoot.attach(o); }); current = null; }
+      pivot.rotation.set(0, 0, 0);
+      records.forEach(function (rec) {
+        rec.pos = rec.home.slice();
+        rec.rot = IDENTITY.map(function (r) { return r.slice(); });
+        rec.stickers.forEach(function (st) {
+          st.color = state[Cube.faceletIndex(rec.home, st.local)];
+          st.mesh.material.color.setHex(Cube.COLOR_HEX[st.color]);
+        });
+        placeObj(rec);
+      });
+      dirty = true;
+    }
+
+    // moves: a move token, move object, alg string, or array of these.
+    function enqueue(moves, o) {
+      var fast = !!(o && o.fast);
+      var list = (typeof moves === 'object' && !Array.isArray(moves)) ? [moves] : moves;
+      Cube.parseAlg(list).forEach(function (m) { queue.push({ move: m, fast: fast }); });
+    }
+
+    function startNext(now) {
+      var item = queue.shift();
+      var objs = [];
+      records.forEach(function (rec) { if (inLayer(rec.pos, item.move)) objs.push(rec.obj); });
+      pivot.rotation.set(0, 0, 0);
+      objs.forEach(function (o) { pivot.attach(o); });
+      current = { move: item.move, start: now, dur: item.fast ? fastDuration : duration, objs: objs };
+    }
+
+    // Leave the pivot at the final angle, move cubies back to cubeRoot and snap them to exact values
+    // read from their Three transforms. The core state advances with the same move.
+    function finishTurn(move, objs) {
+      pivot.rotation.set(0, 0, 0);
+      pivot.rotation[move.axis] = move.amount * Math.PI / 2;
+      pivot.updateMatrixWorld(true);
+      objs.forEach(function (o) { cubeRoot.attach(o); });
+      pivot.rotation.set(0, 0, 0);
+      var m4 = new THREE.Matrix4();
+      records.forEach(function (rec) {
+        if (objs.indexOf(rec.obj) < 0) return;
+        rec.pos = [rec.obj.position.x, rec.obj.position.y, rec.obj.position.z].map(function (v) { return Math.round(v / SPACING) + 0; });
+        m4.makeRotationFromQuaternion(rec.obj.quaternion);
+        rec.rot = snapRotation(m4.elements);
+        placeObj(rec);
+      });
+      state = Cube.applyMove(state, move);
+      dirty = true;
+    }
+
+    function step(now) {
+      if (!current && queue.length) startNext(now);
+      while (current) {
+        var t = (now - current.start) / current.dur;
+        if (t < 1) {
+          pivot.rotation.set(0, 0, 0);
+          pivot.rotation[current.move.axis] = current.move.amount * Math.PI / 2 * easeInOut(Math.max(0, t));
+          dirty = true;
+          break;
+        }
+        var done = current;
+        finishTurn(done.move, done.objs);
+        current = null;
+        if (view.onMoveDone) view.onMoveDone(done.move, state.slice());
+        if (disposed) return;
+        if (queue.length) startNext(done.start + done.dur);
+      }
+    }
+
+    // Highlight the layer(s) a move turns, or clear with null.
+    function highlightLayer(move) {
+      if (highlight) {
+        cubeRoot.remove(highlight);
+        highlight.children.forEach(function (ch) { ch.geometry.dispose(); ch.material.dispose(); });
+        highlight = null;
+      }
+      if (move) {
+        move = Cube.parseMove(move);
+        var ai = AXIS_I[move.axis];
+        var size = [3.08, 3.08, 3.08];
+        size[ai] = move.layers.length + 0.08;
+        var center = [0, 0, 0];
+        center[ai] = move.layers.reduce(function (a, b) { return a + b; }, 0) / move.layers.length;
+        var box = new THREE.BoxGeometry(size[0] * SPACING, size[1] * SPACING, size[2] * SPACING);
+        highlight = new THREE.Group();
+        highlight.add(new THREE.Mesh(box, new THREE.MeshBasicMaterial({ color: 0x4da3ff, transparent: true, opacity: 0.14, depthWrite: false })));
+        highlight.add(new THREE.LineSegments(new THREE.EdgesGeometry(box), new THREE.LineBasicMaterial({ color: 0x4da3ff })));
+        highlight.position.set(center[0] * SPACING, center[1] * SPACING, center[2] * SPACING);
+        cubeRoot.add(highlight);
+      }
+      dirty = true;
+    }
+
+    // ---- camera orbit ----
+    var theta = opts.theta === undefined ? Math.PI / 5 : opts.theta;   // azimuth, + shows the R side
+    var phi = opts.phi === undefined ? Math.PI / 6 : opts.phi;          // elevation
+    var dist = opts.distance || 9;
+    var PHI_MAX = Math.PI / 2 - 0.05;
+
+    function updateCamera() {
+      phi = Math.max(-PHI_MAX, Math.min(PHI_MAX, phi));
+      camera.position.set(dist * Math.cos(phi) * Math.sin(theta), dist * Math.sin(phi), dist * Math.cos(phi) * Math.cos(theta));
+      camera.lookAt(0, 0, 0);
+      light.position.copy(camera.position);
+      dirty = true;
+    }
+
+    var drag = null;
+    function onDown(e) {
+      drag = { x: e.clientX, y: e.clientY, id: e.pointerId };
+      try { renderer.domElement.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      renderer.domElement.style.cursor = 'grabbing';
+    }
+    function onMove(e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      theta -= (e.clientX - drag.x) * 0.008;
+      phi += (e.clientY - drag.y) * 0.008;
+      drag.x = e.clientX; drag.y = e.clientY;
+      updateCamera();
+    }
+    function onUp(e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      drag = null;
+      renderer.domElement.style.cursor = 'grab';
+    }
+    if (interactive) {
+      renderer.domElement.addEventListener('pointerdown', onDown);
+      renderer.domElement.addEventListener('pointermove', onMove);
+      renderer.domElement.addEventListener('pointerup', onUp);
+      renderer.domElement.addEventListener('pointercancel', onUp);
+    }
+
+    // ---- sizing ----
+    function resize() {
+      var w = fixedSize ? opts.width : container.clientWidth;
+      var h = fixedSize ? opts.height : container.clientHeight;
+      if (!w || !h) return;
+      renderer.setSize(w, h);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      dirty = true;
+    }
+    var ro = null;
+    if (!fixedSize) {
+      root.addEventListener('resize', resize);
+      if (root.ResizeObserver) { ro = new root.ResizeObserver(resize); ro.observe(container); }
+    }
+
+    // ---- loop ----
+    var raf = 0;
+    function frame(now) {
+      if (disposed) return;
+      step(now);
+      if (dirty) { renderer.render(scene, camera); dirty = false; }
+      raf = root.requestAnimationFrame(frame);
+    }
+
+    // Read colors straight from the sticker meshes' world transforms (independent of `records`).
+    function readMeshState() {
+      cubeRoot.updateMatrixWorld(true);
+      var s = new Array(54), byHex = {};
+      Object.keys(Cube.COLOR_HEX).forEach(function (k) { byHex[Cube.COLOR_HEX[k]] = k; });
+      var wp = new THREE.Vector3(), wq = new THREE.Quaternion(), n = new THREE.Vector3();
+      records.forEach(function (rec) {
+        rec.obj.getWorldPosition(wp);
+        var pos = [wp.x, wp.y, wp.z].map(function (v) { return Math.round(v / SPACING) + 0; });
+        rec.stickers.forEach(function (st) {
+          st.mesh.getWorldQuaternion(wq);
+          n.set(Z_AXIS[0], Z_AXIS[1], Z_AXIS[2]).applyQuaternion(wq);
+          var i = Cube.faceletIndex(pos, [Math.round(n.x) + 0, Math.round(n.y) + 0, Math.round(n.z) + 0]);
+          if (i >= 0) s[i] = byHex[st.mesh.material.color.getHex()];
+        });
+      });
+      return s;
+    }
+
+    // For every move token (all bases, plain/prime/double), from a mixed start state, turn the real
+    // Three objects through finishTurn and compare mesh-derived colors with core. Restores the view.
+    function selfCheck() {
+      if (!view.isIdle()) return { ok: false, failures: ['view is busy; run selfCheck when idle'] };
+      var saved = state.slice(), failures = [], count = 0;
+      var start = Cube.applyAlg(Cube.solvedState(), "R U' F2 M r' D2 x L b' y' u B2 z d' f l2");
+      Object.keys(Cube.BASE_MOVES).forEach(function (b) {
+        [b, b + "'", b + '2'].forEach(function (tok) {
+          var m = Cube.parseMove(tok);
+          setState(start);
+          var objs = [];
+          records.forEach(function (rec) { if (inLayer(rec.pos, m)) objs.push(rec.obj); });
+          objs.forEach(function (o) { pivot.attach(o); });
+          finishTurn(m, objs);
+          var expect = Cube.applyMove(start, m);
+          count++;
+          if (!Cube.isEqual(readMeshState(), expect)) failures.push(tok + ': mesh colors differ from core');
+          if (!Cube.isEqual(deriveState(records), expect)) failures.push(tok + ': record mapping differs from core');
+          if (!Cube.isEqual(state, expect)) failures.push(tok + ': view state differs from core');
+        });
+      });
+      setState(saved);
+      var res = { ok: failures.length === 0, checked: count, failures: failures };
+      if (root.console) console.log('CubeView selfCheck: ' + (res.ok ? 'OK, ' + count + ' moves' : failures.join('; ')));
+      return res;
+    }
+
+    function dispose() {
+      disposed = true;
+      root.cancelAnimationFrame(raf);
+      highlightLayer(null);
+      root.removeEventListener('resize', resize);
+      if (ro) ro.disconnect();
+      bodyGeo.dispose(); stickerGeo.dispose();
+      materials.forEach(function (m) { m.dispose(); });
+      renderer.dispose();
+      if (renderer.forceContextLoss) renderer.forceContextLoss();
+      if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
+    }
+
+    setState(opts.state || Cube.solvedState());
+    resize();
+    updateCamera();
+    raf = root.requestAnimationFrame(frame);
+    return view;
+  }
+
+  var CubeView = { createCubeView: createCubeView, mapping: mapping };
+  if (typeof module !== 'undefined' && module.exports) module.exports = CubeView;
+  else root.CubeView = CubeView;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+// baseline.js - main cube controller: keys, Scramble / Solve / Reset, Solved label, help line.
+// Browser: defines window.Baseline (needs window.Cube and window.CubeView).
+// Node: require('./src/baseline.js') gives the pure helpers (keyToMove, createHistory) for tests.
+(function (root) {
+  'use strict';
+
+  var Cube = root.Cube || (typeof require === 'function' ? require('./core.js') : null);
+
+  var HELP_TEXT = 'U D L R F B: turn face  ·  Alt+face: wide turn  ·  M: middle slice  ·  X Y Z: rotate cube  ·  Shift: reverse  ·  drag to rotate the view';
+  var KEYS = { U: 'U', D: 'D', L: 'L', R: 'R', F: 'F', B: 'B', X: 'x', Y: 'y', Z: 'z', M: 'M' };
+  var FACES = 'UDLRFB';
+
+  // Map a key (from event.code like 'KeyR', or a letter) plus shift/alt to a move name, or null.
+  // Alt + a face key is the wide turn (Alt+R = r). Moves are in the fixed spatial frame,
+  // so after a rotation 'U' turns whatever face is on top.
+  function keyToMove(key, shift, alt) {
+    var k = /^Key[A-Z]$/.test(key) ? key.slice(3) : String(key).toUpperCase();
+    var base = KEYS[k];
+    if (!base) return null;
+    if (alt) {
+      if (FACES.indexOf(base) < 0) return null;
+      base = base.toLowerCase();
+    }
+    return shift ? base + "'" : base;
+  }
+
+  // The key to map for a keyboard event: the printed letter when it is a latin letter
+  // (so AZERTY/QWERTZ users get the key they see), otherwise the physical key code.
+  function eventKey(e) {
+    return /^[a-z]$/i.test(e.key || '') ? e.key : (e.code || e.key);
+  }
+
+  // History of moves since the cube was last solved, tracked in queue order.
+  // push(move): records the move; if the predicted state is then solved, history restarts.
+  // solveMoves(): the inverse of the history (pushing these empties it again).
+  function createHistory(startState) {
+    var h = { moves: [], state: (startState || Cube.solvedState()).slice() };
+    h.push = function (move) {
+      h.state = Cube.applyMove(h.state, move);
+      h.moves = Cube.isSolved(h.state) ? [] : Cube.pushHistory(h.moves, move);
+    };
+    h.reset = function (state) { h.moves = []; h.state = (state || Cube.solvedState()).slice(); };
+    h.solveMoves = function () { return Cube.invertAlg(h.moves).map(function (m) { return m.name; }); };
+    return h;
+  }
+
+  // opts:
+  //   container    element for the full-window 3D cube (required)
+  //   scrambleBtn, solveBtn, resetBtn   button elements (optional)
+  //   solvedLabel  element shown (display '') when solved and idle, hidden otherwise (optional)
+  //   helpEl       element whose text is set to HELP_TEXT (optional)
+  //   keyTarget    where to listen for keydown (default window)
+  //   view         extra options passed to CubeView.createCubeView
+  //   onMove(move, state)        after each completed move (any source)
+  //   onSolvedChange(solved)     when "solved and idle" changes
+  function init(opts) {
+    var hooks = { onMove: opts.onMove || null, onSolvedChange: opts.onSolvedChange || null };
+    var view = root.CubeView.createCubeView(opts.container, opts.view || {});
+    var history = createHistory(view.getState());
+    var keysEnabled = true;
+    var shownSolved = null;
+
+    function updateSolved() {
+      var solved = view.isIdle() && Cube.isSolved(view.getState());
+      if (opts.solvedLabel) opts.solvedLabel.style.display = solved ? '' : 'none';
+      if (solved !== shownSolved) {
+        shownSolved = solved;
+        if (hooks.onSolvedChange) hooks.onSolvedChange(solved);
+      }
+    }
+
+    view.onMoveDone = function (move, state) {
+      if (hooks.onMove) hooks.onMove(move, state);
+      updateSolved();
+    };
+
+    // Queue moves (names, objects, alg string or array). o.fast plays them quickly.
+    // o.record === false skips the solve history (default records).
+    function applyMoves(moves, o) {
+      o = o || {};
+      var list = Cube.parseAlg(typeof moves === 'object' && !Array.isArray(moves) ? [moves] : moves);
+      if (!list.length) return;
+      if (o.record !== false) list.forEach(function (m) { history.push(m); });
+      else history.reset(Cube.applyAlg(history.state, list));
+      view.enqueue(list, { fast: !!o.fast });
+      updateSolved();
+    }
+
+    function scramble() { applyMoves(Cube.randomScramble(25), { fast: true }); }
+    function solve() { applyMoves(history.solveMoves()); }
+    function reset(state) {
+      view.setState(state || Cube.solvedState());
+      history.reset(view.getState());
+      updateSolved();
+    }
+
+    function bind(btn, fn) {
+      if (!btn) return;
+      btn.addEventListener('click', function () { fn(); btn.blur(); });
+    }
+    bind(opts.scrambleBtn, scramble);
+    bind(opts.solveBtn, solve);
+    bind(opts.resetBtn, function () { reset(); });
+    if (opts.helpEl) opts.helpEl.textContent = HELP_TEXT;
+
+    function onKey(e) {
+      if (!keysEnabled || e.repeat || e.ctrlKey || e.metaKey) return;
+      var t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      var move = keyToMove(eventKey(e), e.shiftKey, e.altKey);
+      if (!move) return;
+      e.preventDefault();
+      applyMoves(move);
+    }
+    var keyTarget = opts.keyTarget || root;
+    keyTarget.addEventListener('keydown', onKey);
+
+    updateSolved();
+
+    return {
+      view: view,
+      hooks: hooks,                                   // assign hooks.onMove / hooks.onSolvedChange any time
+      applyMoves: applyMoves,
+      scramble: scramble,
+      solve: solve,
+      reset: reset,                                   // reset(state?) instant, clears queue + history
+      getState: function () { return view.getState(); },          // state after completed moves
+      getQueuedState: function () { return history.state.slice(); }, // state after all queued moves
+      getHistory: function () { return history.moves.slice(); },
+      isIdle: function () { return view.isIdle(); },
+      isSolvedIdle: function () { return !!shownSolved; },
+      setButtonsEnabled: function (on) {
+        [opts.scrambleBtn, opts.solveBtn, opts.resetBtn].forEach(function (b) { if (b) b.disabled = !on; });
+      },
+      setKeysEnabled: function (on) { keysEnabled = !!on; },
+      dispose: function () { keyTarget.removeEventListener('keydown', onKey); view.dispose(); }
+    };
+  }
+
+  var Baseline = { init: init, keyToMove: keyToMove, eventKey: eventKey, createHistory: createHistory, HELP_TEXT: HELP_TEXT };
+  if (typeof module !== 'undefined' && module.exports) module.exports = Baseline;
+  else root.Baseline = Baseline;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+// timer.js - csTimer-style speedcubing timer (Feature 3).
+// Browser: defines window.Timer (needs window.Cube from core.js loaded first).
+// Node: require('./src/timer.js') returns the same object; only the logic part
+// (createSession, createTimer, formatTime, computeStats) is usable without a DOM.
+// Styles live in the CSS string below; mount() injects them once as <style id="tm-style">.
+(function (root) {
+  'use strict';
+
+  var Cube = (typeof module !== 'undefined' && module.exports) ? require('./core.js') : root.Cube;
+
+  var HOLD_MS = 300;          // hold time before the timer turns green
+  var INSPECT_MS = 15000;     // inspection: over 15 s = +2
+  var INSPECT_DNF_MS = 17000; // over 17 s = DNF
+  var STORAGE_KEY = 'rubiks-timer-session';
+
+  // ---------- formatting and stats (pure) ----------
+
+  // Effective time of an entry in ms: +2 adds 2000, DNF is Infinity.
+  function effective(entry) {
+    if (entry.penalty === 'DNF') return Infinity;
+    return entry.time + (entry.penalty === '+2' ? 2000 : 0);
+  }
+
+  // ms -> "12.34" or "1:02.34", truncated to 0.01 s. Infinity -> "DNF", null -> "-".
+  function formatTime(ms) {
+    if (ms === null || ms === undefined) return '-';
+    if (ms === Infinity) return 'DNF';
+    var cs = Math.floor(ms / 10);
+    var min = Math.floor(cs / 6000);
+    var sec = Math.floor((cs % 6000) / 100);
+    var frac = cs % 100;
+    var s = (frac < 10 ? '0' : '') + frac;
+    if (min > 0) return min + ':' + (sec < 10 ? '0' : '') + sec + '.' + s;
+    return sec + '.' + s;
+  }
+
+  function formatEntry(entry) {
+    if (entry.penalty === 'DNF') return 'DNF(' + formatTime(entry.time) + ')';
+    return formatTime(effective(entry)) + (entry.penalty === '+2' ? '+' : '');
+  }
+
+  // WCA average of the newest n entries (list is oldest first): drop best and worst,
+  // mean the rest. More than one DNF in the window = DNF (a single DNF is the dropped worst).
+  function averageOf(list, n) {
+    if (list.length < n) return null;
+    var times = list.slice(list.length - n).map(effective);
+    var dnfs = times.filter(function (t) { return t === Infinity; }).length;
+    if (dnfs > 1) return Infinity;
+    times.sort(function (a, b) { return a - b; });
+    var mid = times.slice(1, n - 1);
+    var sum = 0;
+    for (var i = 0; i < mid.length; i++) sum += mid[i];
+    return sum / mid.length;
+  }
+
+  // {current, best, ao5, ao12, mean}: numbers in ms, Infinity for DNF, null when not enough solves.
+  // mean is the mean of all non-DNF solves.
+  function computeStats(list) {
+    var finite = list.map(effective).filter(function (t) { return t !== Infinity; });
+    var sum = 0;
+    for (var i = 0; i < finite.length; i++) sum += finite[i];
+    return {
+      current: list.length ? effective(list[list.length - 1]) : null,
+      best: finite.length ? Math.min.apply(null, finite) : (list.length ? Infinity : null),
+      ao5: averageOf(list, 5),
+      ao12: averageOf(list, 12),
+      mean: finite.length ? sum / finite.length : (list.length ? Infinity : null)
+    };
+  }
+
+  // ---------- session store ----------
+
+  function defaultStorage() {
+    try { return root.localStorage || null; } catch (e) { return null; }
+  }
+
+  // Session of solves, oldest first. storage: object with getItem/setItem (default localStorage).
+  function createSession(opts) {
+    opts = opts || {};
+    var storage = opts.storage !== undefined ? opts.storage : defaultStorage();
+    var key = opts.key || STORAGE_KEY;
+    var list = [];
+
+    try {
+      var raw = storage && storage.getItem(key);
+      var parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) list = parsed;
+    } catch (e) { list = []; }
+
+    function save() {
+      try { if (storage) storage.setItem(key, JSON.stringify(list)); } catch (e) { /* ignore */ }
+    }
+
+    return {
+      list: function () { return list.slice(); },
+      add: function (entry) {
+        list.push({
+          time: entry.time, penalty: entry.penalty || 'none',
+          scramble: entry.scramble || '', date: entry.date || Date.now()
+        });
+        save();
+        return list.length - 1;
+      },
+      togglePlus2: function (i) {
+        if (!list[i]) return;
+        list[i].penalty = list[i].penalty === '+2' ? 'none' : '+2';
+        save();
+      },
+      toggleDNF: function (i) {
+        if (!list[i]) return;
+        list[i].penalty = list[i].penalty === 'DNF' ? 'none' : 'DNF';
+        save();
+      },
+      remove: function (i) {
+        if (!list[i]) return;
+        list.splice(i, 1);
+        save();
+      },
+      stats: function () { return computeStats(list); }
+    };
+  }
+
+  // ---------- timer state machine ----------
+  // States: idle, inspecting, holding, ready, running, stopped.
+  // press()/release() are space down/up. tick() advances time-based transitions
+  // (holding -> ready, inspection running past 17 s) and should be called every frame.
+  // opts: { now, session, inspection, onChange(state), onResult(entry, index) }.
+  function createTimer(opts) {
+    opts = opts || {};
+    var now = opts.now || function () { return root.performance ? root.performance.now() : Date.now(); };
+    var session = opts.session || createSession({ storage: null });
+    var t = {
+      state: 'idle',
+      inspection: !!opts.inspection,
+      scramble: '',
+      startAt: 0, holdAt: 0, inspectAt: 0,
+      penalty: 'none',     // inspection penalty for the solve about to start / running
+      lastTime: 0,         // last displayed result in ms
+      session: session
+    };
+    var inspectingBeforeHold = false;
+    var rest = 'idle'; // state to return to when a hold or inspection is cancelled
+
+    function set(state) {
+      if (t.state === state) return;
+      t.state = state;
+      if (opts.onChange) opts.onChange(state);
+    }
+
+    function inspectionPenalty(at) {
+      var used = at - t.inspectAt;
+      if (used > INSPECT_DNF_MS) return 'DNF';
+      if (used > INSPECT_MS) return '+2';
+      return 'none';
+    }
+
+    function record(time, penalty) {
+      t.lastTime = time;
+      var entry = { time: time, penalty: penalty, scramble: t.scramble, date: Date.now() };
+      var index = session.add(entry);
+      rest = 'stopped';
+      set('stopped');
+      if (opts.onResult) opts.onResult(entry, index);
+    }
+
+    t.press = function () {
+      if (t.state === 'running') { t.stop('space'); return; }
+      if (t.state === 'idle' || t.state === 'stopped') {
+        if (t.inspection) {
+          t.inspectAt = now();
+          inspectingBeforeHold = false;
+          set('inspecting');
+          return;
+        }
+        inspectingBeforeHold = false;
+        t.holdAt = now();
+        set('holding');
+        return;
+      }
+      if (t.state === 'inspecting') {
+        inspectingBeforeHold = true;
+        t.holdAt = now();
+        set('holding');
+      }
+    };
+
+    t.release = function () {
+      t.tick();
+      if (t.state === 'ready') {
+        t.startAt = now();
+        t.penalty = inspectingBeforeHold ? inspectionPenalty(t.startAt) : 'none';
+        set('running');
+      } else if (t.state === 'holding') {
+        set(inspectingBeforeHold ? 'inspecting' : rest); // released before green: cancel
+      }
+    };
+
+    t.tick = function () {
+      var at = now();
+      if (t.state === 'holding' && at - t.holdAt >= HOLD_MS) set('ready');
+      if ((t.state === 'inspecting' || ((t.state === 'holding' || t.state === 'ready') && inspectingBeforeHold)) &&
+          at - t.inspectAt > INSPECT_DNF_MS) {
+        inspectingBeforeHold = false;
+        record(0, 'DNF'); // inspection ran out
+      }
+    };
+
+    // reason: 'solved' | 'space' | 'escape' (escape = DNF). Escape outside a solve cancels.
+    t.stop = function (reason) {
+      if (t.state !== 'running') {
+        if (reason === 'escape' && (t.state === 'inspecting' || t.state === 'holding' || t.state === 'ready')) {
+          inspectingBeforeHold = false;
+          set(rest);
+        }
+        return;
+      }
+      var time = Math.max(0, now() - t.startAt);
+      record(time, reason === 'escape' ? 'DNF' : t.penalty);
+    };
+
+    t.notifySolved = function () { t.stop('solved'); };
+
+    // Elapsed ms for display (running), or the last result.
+    t.elapsed = function () {
+      if (t.state === 'running') return now() - t.startAt;
+      if (t.state === 'holding' || t.state === 'ready') return 0;
+      return t.lastTime;
+    };
+
+    // Inspection ms used so far (only meaningful while inspecting/holding after inspection).
+    t.inspectionUsed = function () { return now() - t.inspectAt; };
+    t.isInspecting = function () {
+      return t.state === 'inspecting' || ((t.state === 'holding' || t.state === 'ready') && inspectingBeforeHold);
+    };
+    t.isRunning = function () { return t.state === 'running'; };
+    t.setInspection = function (on) { t.inspection = !!on; };
+    t.setScramble = function (s) { t.scramble = s; };
+
+    return t;
+  }
+
+  // ---------- UI (browser only) ----------
+
+  var CSS = [
+    '.tm-root{font-family:system-ui,sans-serif;color:#ddd;display:flex;flex-direction:column;gap:6px;max-width:340px}',
+    '.tm-scramble{font-family:ui-monospace,Consolas,monospace;font-size:14px;line-height:1.4;word-spacing:3px}',
+    '.tm-digits{font-family:ui-monospace,Consolas,monospace;font-size:56px;font-weight:600;line-height:1.1;color:#eee;user-select:none}',
+    '.tm-digits.tm-holding{color:#e53935}',
+    '.tm-digits.tm-ready{color:#43a047}',
+    '.tm-digits.tm-inspecting{color:#fbc02d}',
+    '.tm-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}',
+    '.tm-root button{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer}',
+    '.tm-root button:hover{background:#444}',
+    '.tm-root button:disabled{opacity:.4;cursor:default}',
+    '.tm-stats{font-size:13px;color:#bbb}',
+    '.tm-list{list-style:none;margin:0;padding:0;max-height:240px;overflow-y:auto;font-size:13px}',
+    '.tm-list li{padding:4px 0;border-top:1px solid #333}',
+    '.tm-list .tm-time{display:inline-block;min-width:90px;font-family:ui-monospace,Consolas,monospace}',
+    '.tm-list .tm-scr{display:block;color:#888;font-size:11px;font-family:ui-monospace,Consolas,monospace}',
+    '.tm-list button.tm-on{background:#7a2b2b;border-color:#a44}'
+  ].join('\n');
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  // Button that never keeps focus, so a later Space can't activate it.
+  function button(text, onClick) {
+    var b = el('button', '', text);
+    b.type = 'button';
+    b.tabIndex = -1;
+    b.addEventListener('mousedown', function (e) { e.preventDefault(); }); // don't take focus
+    b.addEventListener('click', function () { b.blur(); onClick(); });
+    return b;
+  }
+
+  // mount(container, hooks) renders the timer UI.
+  // hooks.applyScramble(moves)  - called with an array of move names to apply to the cube.
+  // hooks.onRunningChange(bool) - called when timing starts (true) and stops (false).
+  // hooks.onActiveChange(bool)  - true while inspecting, holding space or running; false when idle/stopped.
+  // hooks.storage               - optional storage override (default localStorage).
+  // Returns { timer, session, keyDown(e), keyUp(e), notifySolved(), newScramble(), isRunning() }.
+  function mount(container, hooks) {
+    hooks = hooks || {};
+    if (!document.getElementById('tm-style')) {
+      var style = el('style');
+      style.id = 'tm-style';
+      style.textContent = CSS;
+      document.head.appendChild(style);
+    }
+
+    var session = createSession(hooks.storage !== undefined ? { storage: hooks.storage } : {});
+    var wasRunning = false;
+    var wasActive = false;
+    var rafId = 0;
+
+    var rootEl = el('div', 'tm-root');
+    var scrambleEl = el('div', 'tm-scramble');
+    var digits = el('div', 'tm-digits', '0.00');
+    var controls = el('div', 'tm-row');
+    var inspLabel = el('label');
+    var inspBox = el('input');
+    inspBox.type = 'checkbox';
+    inspBox.tabIndex = -1;
+    inspLabel.appendChild(inspBox);
+    inspLabel.appendChild(document.createTextNode(' Inspection (15 s)'));
+    var newBtn = button('New scramble', function () { newScramble(); });
+    controls.appendChild(newBtn);
+    controls.appendChild(inspLabel);
+    var statsEl = el('div', 'tm-stats');
+    var listEl = el('ul', 'tm-list');
+    rootEl.appendChild(scrambleEl);
+    rootEl.appendChild(digits);
+    rootEl.appendChild(controls);
+    rootEl.appendChild(statsEl);
+    rootEl.appendChild(listEl);
+    container.appendChild(rootEl);
+
+    var timer = createTimer({
+      session: session,
+      onChange: function () { render(); loop(); },
+      onResult: function () { renderSession(); newScramble(); }
+    });
+
+    inspBox.addEventListener('change', function () {
+      inspBox.blur();
+      timer.setInspection(inspBox.checked);
+    });
+
+    function newScramble() {
+      if (timer.isRunning()) return;
+      var moves = Cube.randomScramble(20, { half: true });
+      timer.setScramble(moves.join(' '));
+      scrambleEl.textContent = timer.scramble;
+      if (hooks.applyScramble) hooks.applyScramble(moves);
+    }
+
+    function render() {
+      var s = timer.state;
+      var cls = 'tm-digits';
+      if (s === 'holding') cls += ' tm-holding';
+      else if (s === 'ready') cls += ' tm-ready';
+      else if (s === 'inspecting') cls += ' tm-inspecting';
+      digits.className = cls;
+
+      if (s === 'inspecting') {
+        var used = timer.inspectionUsed();
+        digits.textContent = used > INSPECT_MS ? (used > INSPECT_DNF_MS ? 'DNF' : '+2')
+          : String(Math.ceil((INSPECT_MS - used) / 1000));
+      } else if (s === 'stopped') {
+        var last = session.list();
+        digits.textContent = last.length ? formatEntry(last[last.length - 1]) : formatTime(timer.lastTime);
+      } else {
+        digits.textContent = formatTime(timer.elapsed());
+      }
+
+      newBtn.disabled = timer.isRunning();
+      inspBox.disabled = s !== 'idle' && s !== 'stopped';
+
+      var running = timer.isRunning();
+      if (running !== wasRunning) {
+        wasRunning = running;
+        if (hooks.onRunningChange) hooks.onRunningChange(running);
+      }
+      var active = s !== 'idle' && s !== 'stopped';
+      if (active !== wasActive) {
+        wasActive = active;
+        if (hooks.onActiveChange) hooks.onActiveChange(active);
+      }
+    }
+
+    // Animate digits while a time-based state is active.
+    function loop() {
+      if (rafId) return;
+      var active = { holding: 1, ready: 1, running: 1, inspecting: 1 };
+      function frame() {
+        rafId = 0;
+        timer.tick();
+        render();
+        if (active[timer.state]) rafId = requestAnimationFrame(frame);
+      }
+      if (active[timer.state]) rafId = requestAnimationFrame(frame);
+    }
+
+    function renderSession() {
+      var list = session.list();
+      var st = session.stats();
+      statsEl.textContent = 'current: ' + formatTime(st.current) + '   best: ' + formatTime(st.best) +
+        '   ao5: ' + formatTime(st.ao5) + '   ao12: ' + formatTime(st.ao12) + '   mean: ' + formatTime(st.mean) +
+        '   (' + list.length + ')';
+      listEl.textContent = '';
+      for (var i = list.length - 1; i >= 0; i--) {
+        (function (i, entry) {
+          var li = el('li');
+          li.appendChild(el('span', 'tm-time', (i + 1) + '. ' + formatEntry(entry)));
+          var p2 = button('+2', function () { session.togglePlus2(i); renderSession(); render(); });
+          var dnf = button('DNF', function () { session.toggleDNF(i); renderSession(); render(); });
+          var del = button('delete', function () { session.remove(i); renderSession(); render(); });
+          if (entry.penalty === '+2') p2.className = 'tm-on';
+          if (entry.penalty === 'DNF') dnf.className = 'tm-on';
+          li.appendChild(p2);
+          li.appendChild(document.createTextNode(' '));
+          li.appendChild(dnf);
+          li.appendChild(document.createTextNode(' '));
+          li.appendChild(del);
+          li.appendChild(el('span', 'tm-scr', entry.scramble));
+          listEl.appendChild(li);
+        })(i, list[i]);
+      }
+    }
+
+    function isSpace(e) { return e.code === 'Space' || e.key === ' '; }
+
+    // Integrator calls these from window keydown/keyup listeners. Return true when handled.
+    function keyDown(e) {
+      if (isSpace(e)) {
+        e.preventDefault();
+        if (document.activeElement && document.activeElement.blur && document.activeElement !== document.body) {
+          document.activeElement.blur();
+        }
+        if (!e.repeat) timer.press();
+        return true;
+      }
+      if (e.key === 'Escape' && timer.state !== 'idle' && timer.state !== 'stopped') {
+        e.preventDefault();
+        timer.stop('escape');
+        return true;
+      }
+      return false;
+    }
+
+    function keyUp(e) {
+      if (isSpace(e)) {
+        e.preventDefault();
+        timer.release();
+        return true;
+      }
+      return false;
+    }
+
+    newScramble();
+    renderSession();
+    render();
+
+    return {
+      timer: timer,
+      session: session,
+      keyDown: keyDown,
+      keyUp: keyUp,
+      notifySolved: function () { timer.notifySolved(); },
+      newScramble: newScramble,
+      isRunning: function () { return timer.isRunning(); }
+    };
+  }
+
+  var Timer = {
+    HOLD_MS: HOLD_MS, INSPECT_MS: INSPECT_MS, INSPECT_DNF_MS: INSPECT_DNF_MS, STORAGE_KEY: STORAGE_KEY,
+    CSS: CSS,
+    formatTime: formatTime, formatEntry: formatEntry, effective: effective,
+    averageOf: averageOf, computeStats: computeStats,
+    createSession: createSession, createTimer: createTimer,
+    mount: mount
+  };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = Timer;
+  else root.Timer = Timer;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+// algtab.js - Feature 2: Algorithms tab. One card per Cube.ALGS entry with a generated diagram,
+// the alg text, and a lazily created mini cube (Play/Pause, step back, step forward, Reset).
+// Browser: defines window.AlgTab (needs window.Cube; mini cubes need window.CubeView + THREE).
+// Node: require('./src/algtab.js') gives the pure parts (caseState, verifyCard, diagram builders).
+(function (root) {
+  'use strict';
+
+  var Cube = root.Cube || (typeof require === 'function' ? require('./core.js') : null);
+
+  var GRAY = '#4a4f59';
+  var STROKE = '#0d0e11';
+  var MAX_LIVE = 12;   // live WebGL mini cubes at once (browsers cap contexts at ~16)
+  var PLACEHOLDER = 'Click to load 3D';
+
+  function hex(letter) { return '#' + ('000000' + Cube.COLOR_HEX[letter].toString(16)).slice(-6); }
+
+  // ---------- Pure parts ----------
+
+  // The case state for an alg: CFOP-hold solved cube with the inverse alg applied.
+  function caseState(alg) { return Cube.caseState(alg); }
+
+  function findEntry(algOrEntry) {
+    if (algOrEntry && typeof algOrEntry === 'object' && algOrEntry.alg) return algOrEntry;
+    var s = Cube.algToString(Cube.parseAlg(algOrEntry));
+    for (var i = 0; i < Cube.ALGS.length; i++) {
+      if (Cube.algToString(Cube.parseAlg(Cube.ALGS[i].alg)) === s) return Cube.ALGS[i];
+    }
+    return { id: 'custom', name: 'Custom', group: 'PLL edges', target: 'cube', alg: algOrEntry };
+  }
+
+  // States a card uses: the diagram is drawn from diagramState, the mini cube starts at startState.
+  function diagramState(entry) { return caseState(entry.alg); }
+  function startState(entry) { return caseState(entry.alg); }
+
+  // verifyCard(alg or ALGS entry): diagram and mini cube start in the same state, and playing the
+  // alg from there leaves the target solved (exactly, no extra U turn needed).
+  function verifyCard(algOrEntry) {
+    var entry = findEntry(algOrEntry);
+    var d = diagramState(entry), s = startState(entry);
+    var sameStart = Cube.isEqual(d, s);
+    var final = Cube.applyAlg(s, entry.alg);
+    var solved = Cube.targetSolved(final, entry.target);
+    return { ok: sameStart && solved, sameStart: sameStart, solved: solved };
+  }
+
+  function cubieColors(state, pos) {
+    var out = [];
+    Cube.FACELETS.forEach(function (f, i) { if (f.pos.join() === pos.join()) out.push(state[i]); });
+    return out;
+  }
+
+  // Where the piece now at pos belongs, judged by the current centers.
+  function homeOf(state, pos) {
+    var home = [0, 0, 0];
+    cubieColors(state, pos).forEach(function (c) {
+      var face = Cube.FACES.filter(function (f) { return Cube.centerColor(state, f) === c; })[0];
+      var n = Cube.NORMALS[face];
+      home = [home[0] + n[0], home[1] + n[1], home[2] + n[2]];
+    });
+    return home;
+  }
+
+  // Top-down view data: U 3x3 (row 0 at the back) plus the 12 top-layer side stickers.
+  // Returns { u: [9 colors], back: [3], front: [3], left: [3], right: [3] } (left/right ordered back to front,
+  // back/front ordered left to right).
+  function topView(state) {
+    var u = [], back = [], front = [], left = [], right = [];
+    for (var r = 0; r < 3; r++) for (var c = 0; c < 3; c++) u.push(Cube.at(state, [c - 1, 1, r - 1], [0, 1, 0]));
+    for (var i = 0; i < 3; i++) {
+      back.push(Cube.at(state, [i - 1, 1, -1], [0, 0, -1]));
+      front.push(Cube.at(state, [i - 1, 1, 1], [0, 0, 1]));
+      left.push(Cube.at(state, [-1, 1, i - 1], [-1, 0, 0]));
+      right.push(Cube.at(state, [1, 1, i - 1], [1, 0, 0]));
+    }
+    return { u: u, back: back, front: front, left: left, right: right };
+  }
+
+  var U_PIECES = [[-1, 1, -1], [0, 1, -1], [1, 1, -1], [1, 1, 0], [1, 1, 1], [0, 1, 1], [-1, 1, 1], [-1, 1, 0]];
+
+  // PLL arrows: for each U-layer piece out of place, from its position to where it belongs.
+  // 2-cycles are merged into one { from, to, both: true }.
+  function pllArrows(state) {
+    var moved = [];
+    U_PIECES.forEach(function (p) {
+      var h = homeOf(state, p);
+      if (h.join() !== p.join()) moved.push({ from: p, to: h });
+    });
+    var out = [];
+    moved.forEach(function (a) {
+      var back = moved.filter(function (b) { return b.from.join() === a.to.join() && b.to.join() === a.from.join(); })[0];
+      if (back) {
+        if (!out.some(function (o) { return o.both && o.from.join() === a.to.join(); })) {
+          out.push({ from: a.from, to: a.to, both: true });
+        }
+      } else out.push({ from: a.from, to: a.to, both: false });
+    });
+    return out;
+  }
+
+  // F2L view: colors for the visible U, F and R facelets. Only cross edges, the FR pair and centers keep
+  // their color; everything else is null (gray). Returns [{ face, pos, normal, color }].
+  function f2lStickers(state) {
+    var cross = Cube.centerColor(state, 'D'), fc = Cube.centerColor(state, 'F'), rc = Cube.centerColor(state, 'R');
+    function same(a, b) { return a.length === b.length && a.every(function (x) { return b.indexOf(x) >= 0; }); }
+    var out = [];
+    Cube.FACELETS.forEach(function (f, i) {
+      if (f.face !== 'U' && f.face !== 'F' && f.face !== 'R') return;
+      var cols = cubieColors(state, f.pos);
+      var keep = cols.length === 1 ||
+        (cols.length === 2 && cols.indexOf(cross) >= 0) ||
+        same(cols, [cross, fc, rc]) || same(cols, [fc, rc]);
+      out.push({ face: f.face, pos: f.pos, normal: f.normal, color: keep ? state[i] : null });
+    });
+    return out;
+  }
+
+  // ---------- SVG builders (pure strings) ----------
+
+  function rect(x, y, w, h, fill) {
+    return '<rect x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '" rx="2" fill="' + fill +
+      '" stroke="' + STROKE + '" stroke-width="1.5"/>';
+  }
+
+  // OLL (yellowOnly) or PLL (full color + arrows) top view.
+  function topSvg(state, yellowOnly, idSuffix) {
+    var v = topView(state);
+    var top = Cube.centerColor(state, 'U');
+    function fill(c) { return yellowOnly ? (c === top ? hex(top) : GRAY) : hex(c); }
+    var S = 30, O = 16, T = 10, parts = [];
+    for (var r = 0; r < 3; r++) for (var c = 0; c < 3; c++) parts.push(rect(O + c * S + 1, O + r * S + 1, S - 2, S - 2, fill(v.u[r * 3 + c])));
+    for (var i = 0; i < 3; i++) {
+      parts.push(rect(O + i * S + 2, O - T - 3, S - 4, T, fill(v.back[i])));
+      parts.push(rect(O + i * S + 2, O + 3 * S + 3, S - 4, T, fill(v.front[i])));
+      parts.push(rect(O - T - 3, O + i * S + 2, T, S - 4, fill(v.left[i])));
+      parts.push(rect(O + 3 * S + 3, O + i * S + 2, T, S - 4, fill(v.right[i])));
+    }
+    var defs = '';
+    if (!yellowOnly) {
+      var id = 'ah' + (idSuffix || '');
+      defs = '<defs><marker id="' + id + '" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" ' +
+        'orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#111"/></marker></defs>';
+      pllArrows(state).forEach(function (a) {
+        var x1 = O + (a.from[0] + 1.5) * S, y1 = O + (a.from[2] + 1.5) * S;
+        var x2 = O + (a.to[0] + 1.5) * S, y2 = O + (a.to[2] + 1.5) * S;
+        var dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy), k = 7 / len;
+        x1 += dx * k; y1 += dy * k; x2 -= dx * k; y2 -= dy * k;
+        parts.push('<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) + '" y2="' + y2.toFixed(1) +
+          '" stroke="#111" stroke-width="2.5" stroke-linecap="round" marker-end="url(#' + id + ')"' +
+          (a.both ? ' marker-start="url(#' + id + ')"' : '') + '/>');
+      });
+    }
+    var W = O * 2 + 3 * S;
+    return '<svg class="at-diagram" viewBox="0 0 ' + W + ' ' + W + '" width="' + W + '" height="' + W + '" role="img">' +
+      defs + parts.join('') + '</svg>';
+  }
+
+  // Isometric U/F/R view for F2L.
+  function f2lSvg(state) {
+    var K = 22, C30 = Math.cos(Math.PI / 6);
+    function proj(p) { return [(p[0] - p[2]) * C30 * K, ((p[0] + p[2]) * 0.5 - p[1]) * K]; }
+    var parts = [];
+    f2lStickers(state).forEach(function (st) {
+      var n = st.normal;
+      var center = [st.pos[0] + n[0] * 0.5, st.pos[1] + n[1] * 0.5, st.pos[2] + n[2] * 0.5];
+      var axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]].filter(function (a) { return a[0] * n[0] + a[1] * n[1] + a[2] * n[2] === 0; });
+      var a = axes[0], b = axes[1], h = 0.45;
+      var pts = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(function (s) {
+        var p = [0, 1, 2].map(function (k) { return center[k] + (a[k] * s[0] + b[k] * s[1]) * h; });
+        var q = proj(p);
+        return (q[0] + 80).toFixed(1) + ',' + (q[1] + 80).toFixed(1);
+      });
+      parts.push('<polygon points="' + pts.join(' ') + '" fill="' + (st.color ? hex(st.color) : GRAY) +
+        '" stroke="' + STROKE + '" stroke-width="1.5" stroke-linejoin="round"/>');
+    });
+    return '<svg class="at-diagram" viewBox="0 0 160 160" width="160" height="160" role="img">' +
+      '<polygon points="' + outline(proj) + '" fill="' + STROKE + '"/>' + parts.join('') + '</svg>';
+  }
+
+  // Dark hexagon behind the iso stickers so the gaps read as the cube body.
+  function outline(proj) {
+    var e = 1.5;
+    return [[e, e, -e], [e, -e, -e], [e, -e, e], [-e, -e, e], [-e, e, e], [-e, e, -e]].map(function (p) {
+      var q = proj(p);
+      return (q[0] + 80).toFixed(1) + ',' + (q[1] + 80).toFixed(1);
+    }).join(' ');
+  }
+
+  // Diagram SVG for an ALGS entry, always generated from its case state.
+  function diagramSvg(entry, idSuffix) {
+    var s = diagramState(entry);
+    if (entry.group === 'F2L') return f2lSvg(s);
+    if (entry.group.indexOf('OLL') === 0) return topSvg(s, true, idSuffix);
+    return topSvg(s, false, idSuffix);
+  }
+
+  // ---------- Browser UI ----------
+
+  var CSS = [
+    '.at-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;padding:16px;box-sizing:border-box}',
+    '.at-card{background:#1e2128;border:1px solid #2f343e;border-radius:10px;padding:14px;color:#ddd;display:flex;flex-direction:column;gap:10px;min-width:0}',
+    '.at-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}',
+    '.at-name{font-weight:600;font-size:15px}',
+    '.at-group{color:#8a909c;font-size:12px;white-space:nowrap}',
+    '.at-body{display:flex;gap:10px;align-items:center;justify-content:space-around;flex-wrap:wrap}',
+    '.at-diagram{display:block;max-width:100%;height:auto}',
+    '.at-mini{width:150px;height:150px;border-radius:8px;background:#15171c;display:flex;align-items:center;justify-content:center;color:#666;font-size:12px}',
+    '.at-alg{font:15px ui-monospace,Consolas,monospace;display:flex;flex-wrap:wrap;gap:2px 7px}',
+    '.at-tok{padding:1px 3px;border-radius:4px}',
+    '.at-tok.at-cur{background:#3d7bdc;color:#fff}',
+    '.at-tok.at-done{color:#6f7682}',
+    '.at-ctrl{display:flex;gap:6px}',
+    '.at-ctrl button{background:#2a2e37;color:#eee;border:1px solid #444a56;border-radius:6px;padding:5px 10px;font:inherit;font-size:13px;cursor:pointer}',
+    '.at-ctrl button:hover:not(:disabled){background:#353a45}',
+    '.at-ctrl button:disabled{opacity:0.4;cursor:default}'
+  ].join('\n');
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function mount(container) {
+    if (!document.getElementById('at-style')) {
+      var st = el('style'); st.id = 'at-style'; st.textContent = CSS; document.head.appendChild(st);
+    }
+    var grid = el('div', 'at-grid');
+    container.appendChild(grid);
+    var live = [];   // cards with a live mini cube, oldest first
+    var cards = Cube.ALGS.map(function (entry, i) { return makeCard(entry, i); });
+
+    var io = null;
+    if (typeof IntersectionObserver === 'function') {
+      io = new IntersectionObserver(function (items) {
+        // Update all flags and free off-screen cubes first, then fill visible cards.
+        items.forEach(function (it) {
+          var card = it.target.__atCard;
+          card.visible = it.isIntersecting;
+          if (!card.visible) releaseView(card);
+        });
+        cards.forEach(function (c) { if (c.visible) ensureView(c, false); });
+      });
+      cards.forEach(function (c) { c.mini.__atCard = c; io.observe(c.mini); });
+    }
+
+    function makeCard(entry, i) {
+      var card = { entry: entry, moves: Cube.parseAlg(entry.alg), pos: 0, playing: false, active: -1, view: null, visible: false };
+      var root_ = el('div', 'at-card');
+      var head = el('div', 'at-head');
+      head.appendChild(el('span', 'at-name', entry.name));
+      head.appendChild(el('span', 'at-group', entry.group));
+      root_.appendChild(head);
+
+      var body = el('div', 'at-body');
+      var diag = el('div');
+      diag.innerHTML = diagramSvg(entry, '-' + i);
+      body.appendChild(diag);
+      card.mini = el('div', 'at-mini', PLACEHOLDER);
+      card.mini.addEventListener('click', function () { ensureView(card, true); });
+      body.appendChild(card.mini);
+      root_.appendChild(body);
+
+      var algEl = el('div', 'at-alg');
+      card.tokens = card.moves.map(function (m) { var t = el('span', 'at-tok', m.name); algEl.appendChild(t); return t; });
+      root_.appendChild(algEl);
+
+      var ctrl = el('div', 'at-ctrl');
+      card.btnBack = button(ctrl, '◀', 'Step back', function () { step(card, -1); });
+      card.btnPlay = button(ctrl, 'Play', 'Play / Pause', function () { togglePlay(card); });
+      card.btnFwd = button(ctrl, '▶', 'Step forward', function () { step(card, 1); });
+      button(ctrl, 'Reset', 'Reset to the case', function () { resetCard(card); });
+      root_.appendChild(ctrl);
+
+      grid.appendChild(root_);
+      card.el = root_;
+      render(card);
+      return card;
+    }
+
+    function button(parent, label, title, fn) {
+      var b = el('button', null, label);
+      b.type = 'button';
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      b.addEventListener('click', function () { b.blur(); fn(); });
+      parent.appendChild(b);
+      return b;
+    }
+
+    // Create the mini cube (if needed) showing the card's current logical position.
+    // At the cap, an off-screen cube is freed first; if all live cubes are on screen, only a click
+    // (force) frees the oldest one, so scrolling never makes visible cubes flicker away.
+    function ensureView(card, force) {
+      if (card.view) return card.view;
+      if (!root.CubeView || !root.THREE) return null;
+      while (live.length >= MAX_LIVE) {
+        var victim = live.filter(function (c) { return !c.visible; })[0] || (force ? live[0] : null);
+        if (!victim) { card.mini.textContent = PLACEHOLDER; return null; }
+        releaseView(victim);
+      }
+      card.mini.textContent = '';
+      var s = Cube.applyAlg(startState(card.entry), card.moves.slice(0, card.pos));
+      card.view = root.CubeView.createCubeView(card.mini, { width: 150, height: 150, distance: 10, state: s });
+      card.view.onMoveDone = function () { moveDone(card); };
+      live.push(card);
+      return card.view;
+    }
+
+    function releaseView(card) {
+      if (!card.view) return;
+      // Finish logically: any move in flight counts as done.
+      if (card.active >= 0) { card.pos = card.dir > 0 ? card.active + 1 : card.active; card.active = -1; }
+      card.playing = false;
+      card.view.dispose();
+      card.view = null;
+      card.mini.textContent = PLACEHOLDER;
+      live.splice(live.indexOf(card), 1);
+      render(card);
+    }
+
+    function startMove(card, dir) {
+      var v = ensureView(card, true);
+      if (!v || !v.isIdle()) return false;
+      if (dir > 0) {
+        if (card.pos >= card.moves.length) return false;
+        card.active = card.pos; card.dir = 1;
+        v.enqueue(card.moves[card.pos]);
+      } else {
+        if (card.pos <= 0) return false;
+        card.active = card.pos - 1; card.dir = -1;
+        v.enqueue(Cube.invertMove(card.moves[card.pos - 1]));
+      }
+      render(card);
+      return true;
+    }
+
+    function moveDone(card) {
+      card.pos = card.dir > 0 ? card.active + 1 : card.active;
+      card.active = -1;
+      if (card.playing && card.pos < card.moves.length) startMove(card, 1);
+      else card.playing = false;
+      render(card);
+    }
+
+    function step(card, dir) {
+      card.playing = false;
+      startMove(card, dir);
+      render(card);
+    }
+
+    function togglePlay(card) {
+      if (card.playing) { card.playing = false; render(card); return; }
+      var v = ensureView(card, true);
+      if (!v) return;
+      if (card.pos >= card.moves.length && v.isIdle()) {
+        card.pos = 0;
+        v.setState(startState(card.entry));
+      }
+      card.playing = true;
+      if (v.isIdle()) startMove(card, 1);
+      render(card);
+    }
+
+    function resetCard(card) {
+      card.playing = false;
+      card.pos = 0;
+      card.active = -1;
+      if (card.view) card.view.setState(startState(card.entry));
+      render(card);
+    }
+
+    // Highlight the move being played, or the next move when idle.
+    function render(card) {
+      var cur = card.active >= 0 ? card.active : card.pos;
+      card.tokens.forEach(function (t, i) {
+        t.className = 'at-tok' + (i === cur ? ' at-cur' : (i < cur ? ' at-done' : ''));
+      });
+      card.btnPlay.textContent = card.playing ? 'Pause' : 'Play';
+      var busy = card.active >= 0;
+      card.btnBack.disabled = busy || card.pos <= 0;
+      card.btnFwd.disabled = busy || card.pos >= card.moves.length;
+    }
+
+    // Without IntersectionObserver, a card's cube is created on its first click (placeholder or controls).
+    return {
+      cards: cards,
+      dispose: function () {
+        if (io) io.disconnect();
+        cards.forEach(releaseView);
+        if (grid.parentNode) grid.parentNode.removeChild(grid);
+      }
+    };
+  }
+
+  var AlgTab = {
+    mount: mount,
+    caseState: caseState,
+    verifyCard: verifyCard,
+    diagramState: diagramState,
+    startState: startState,
+    topView: topView,
+    pllArrows: pllArrows,
+    f2lStickers: f2lStickers,
+    diagramSvg: diagramSvg,
+    MAX_LIVE: MAX_LIVE
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = AlgTab;
+  else root.AlgTab = AlgTab;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+// app.js - wires the page together: baseline cube, CFOP hint panel (solver in a Web Worker),
+// timer, and the Cube | Algorithms tabs. Browser only; loaded last.
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var scrambleBtn = $('scramble'), solveBtn = $('solve'), resetBtn = $('reset');
+  var hintsBtn = $('hintsBtn'), tabCube = $('tabCube'), tabAlgs = $('tabAlgs');
+  var hintsEl = $('hints'), algsEl = $('algs');
+
+  var app = Baseline.init({
+    container: $('cube'),
+    scrambleBtn: scrambleBtn,
+    solveBtn: solveBtn,
+    resetBtn: resetBtn,
+    solvedLabel: $('solved'),
+    helpEl: $('help')
+  });
+  $('help').textContent = Baseline.HELP_TEXT + '  ·  H: hints  ·  Space: timer';
+
+  // Top-bar buttons never keep focus, so Space can never press them.
+  [scrambleBtn, solveBtn, resetBtn, hintsBtn, tabCube, tabAlgs].forEach(function (b) {
+    b.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    b.addEventListener('click', function () { b.blur(); });
+  });
+
+  var tab = 'cube';
+  var timing = false;   // inspection, space hold or timed solve in progress
+
+  // ---------------------------------------------------------------------------
+  // Solver worker. Built from the inlined core + solver source so it works from file://.
+  // ---------------------------------------------------------------------------
+  var solver = (function () {
+    var src = $('src-core').textContent + '\n;\n' + $('src-solver').textContent;
+    var pending = {};
+    var nextId = 1;
+    var worker = null;
+    try {
+      var body = src + '\n;self.onmessage = function (e) {\n' +
+        '  var out = { id: e.data.id };\n' +
+        '  try { out.hint = Solver.getHint(e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
+        '  self.postMessage(out);\n' +
+        '};\n';
+      var url = URL.createObjectURL(new Blob([body], { type: 'text/javascript' }));
+      worker = new Worker(url);
+      worker.onmessage = function (e) {
+        var cb = pending[e.data.id];
+        delete pending[e.data.id];
+        if (cb) cb(e.data.error || null, e.data.hint || null);
+      };
+      worker.onerror = function (e) { e.preventDefault(); fallback(); };
+    } catch (err) {
+      fallback();
+    }
+
+    // If workers are unavailable, run the solver on the main thread (it is fast, ~ms per hint).
+    function fallback() {
+      if (worker) { worker.terminate(); worker = null; }
+      if (!window.Solver) (0, eval)($('src-solver').textContent);
+      Object.keys(pending).forEach(function (id) { run(+id, pending[id].state); });
+    }
+    function run(id, state) {
+      setTimeout(function () {
+        var cb = pending[id];
+        if (!cb) return;
+        delete pending[id];
+        try { cb(null, window.Solver.getHint(state)); } catch (err) { cb(String(err && err.message || err), null); }
+      }, 0);
+    }
+
+    return {
+      getHint: function (state, cb) {
+        var id = nextId++;
+        cb.state = state;
+        pending[id] = cb;
+        if (worker) worker.postMessage({ id: id, state: state });
+        else run(id, state);
+      }
+    };
+  })();
+
+  // ---------------------------------------------------------------------------
+  // Hint panel
+  // ---------------------------------------------------------------------------
+  var hintsOn = false;
+  var hint = null;        // last hint from the solver
+  var step = 0;           // index of the next move in hint.moves
+  var nextMove = null;    // move still to play for hint.moves[step] (half of an X2 may be done)
+  var stale = true;       // hint no longer matches the cube
+  var requestId = 0;
+
+  function hintsVisible() { return hintsOn && !timing && tab === 'cube'; }
+
+  function refreshHints() {
+    hintsBtn.textContent = 'Hints: ' + (hintsOn ? 'on' : 'off');
+    hintsBtn.classList.toggle('on', hintsOn);
+    if (!hintsVisible()) {
+      hintsEl.style.display = 'none';
+      app.view.highlightLayer(null);
+      return;
+    }
+    hintsEl.style.display = '';
+    if (stale && app.isIdle()) requestHint();
+    render();
+  }
+
+  function requestHint() {
+    var id = ++requestId;
+    var state = app.getState();
+    solver.getHint(state, function (err, h) {
+      if (id !== requestId) return;       // a newer request superseded this one
+      if (err) { hint = { error: err }; stale = false; render(); return; }
+      hint = h;
+      step = 0;
+      nextMove = h.moves.length ? h.moves[0] : null;
+      stale = false;
+      render();
+    });
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function render() {
+    if (!hintsVisible()) return;
+    hintsEl.textContent = '';
+    if (stale || !hint) {
+      hintsEl.appendChild(el('div', 'busy', 'Working out the next step…'));
+      app.view.highlightLayer(null);
+      return;
+    }
+    if (hint.error) {
+      hintsEl.appendChild(el('div', 'busy', 'No hint available: ' + hint.error));
+      app.view.highlightLayer(null);
+      return;
+    }
+    hintsEl.appendChild(el('div', 'stage', hint.stage === 0 ? 'Solved' :
+      'Stage ' + hint.stage + ' of 8: ' + hint.stageName));
+    hintsEl.appendChild(el('div', 'goal', hint.goal));
+    if (hint.caseName) {
+      hintsEl.appendChild(el('div', 'case', 'Case: ' + hint.caseName + (hint.setup ? '  (setup ' + hint.setup + ')' : '')));
+    }
+    if (hint.moves.length) {
+      var row = el('div', 'moves');
+      hint.moves.forEach(function (m, i) {
+        var label = (i === step && nextMove !== m) ? m + ' (' + nextMove + ' left)' : m;
+        row.appendChild(el('span', 'mv' + (i < step ? ' done' : i === step ? ' next' : ''), label));
+      });
+      hintsEl.appendChild(row);
+    }
+    app.view.highlightLayer(app.isIdle() && nextMove ? nextMove : null);
+  }
+
+  // A move finished on the main cube: advance the hint if it was the suggested move.
+  function trackMove(move) {
+    if (stale || !hint || hint.error || !nextMove) { stale = true; return; }
+    var want = Cube.parseMove(nextMove);
+    if (move.name === want.name) {
+      step++;
+      if (step >= hint.moves.length) { stale = true; nextMove = null; }
+      else nextMove = hint.moves[step];
+    } else if (want.turns === 2 && move.base === want.base && move.turns !== 2) {
+      nextMove = move.name;  // first half of an X2 played as two quarter turns
+    } else {
+      stale = true;
+    }
+  }
+
+  // Cube changed without per-move events (reset) or with moves we did not suggest.
+  function invalidateHint() {
+    stale = true;
+    refreshHints();
+  }
+
+  function toggleHints() {
+    hintsOn = !hintsOn;
+    refreshHints();
+  }
+  hintsBtn.addEventListener('click', toggleHints);
+  resetBtn.addEventListener('click', invalidateHint);   // runs after Baseline's own reset handler
+
+  // ---------------------------------------------------------------------------
+  // Timer
+  // ---------------------------------------------------------------------------
+  var mounted = false;
+  var scrambleTimer = 0;      // pending delayed scramble after a solve (0 = none)
+  var pendingScramble = null;
+  var scrambling = false;     // a timer scramble is still animating
+
+  function timerIdle() { var s = ui.timer.state; return s === 'idle' || s === 'stopped'; }
+
+  function cancelPendingScramble() {
+    clearTimeout(scrambleTimer);
+    scrambleTimer = 0;
+    pendingScramble = null;
+  }
+
+  function applyTimerScramble(moves) {
+    if (!mounted) return;   // the first scramble is applied right after mount
+    cancelPendingScramble();
+    app.reset();
+    app.applyMoves(moves, { fast: true });
+    scrambling = true;
+    invalidateHint();
+  }
+
+  var ui = Timer.mount($('timer'), {
+    applyScramble: function (moves) {
+      // After a solve, leave the solved cube visible for a moment before scrambling.
+      if (mounted && ui && ui.timer.state === 'stopped' && Cube.isSolved(app.getState())) {
+        cancelPendingScramble();
+        pendingScramble = moves;
+        scrambleTimer = setTimeout(function () {
+          scrambleTimer = 0;
+          if (timerIdle()) applyTimerScramble(moves);
+        }, 700);
+        return;
+      }
+      applyTimerScramble(moves);
+    },
+    // Inspection, the space hold and the solve itself all count as timing.
+    onActiveChange: function (active) {
+      timing = active;
+      app.setButtonsEnabled(!active);
+      tabAlgs.disabled = active;
+      refreshHints();
+    }
+  });
+  mounted = true;
+  applyTimerScramble(ui.timer.scramble);   // the cube matches the scramble shown on load
+
+  // ---------------------------------------------------------------------------
+  // Moves finishing on the main cube
+  // ---------------------------------------------------------------------------
+  app.hooks.onMove = function (move, state) {
+    if (app.isIdle()) scrambling = false;
+    trackMove(move);
+    if (Cube.isSolved(state)) ui.notifySolved();
+    if (app.isIdle()) refreshHints();
+  };
+
+  // ---------------------------------------------------------------------------
+  // Tabs
+  // ---------------------------------------------------------------------------
+  var algTab = AlgTab.mount(algsEl);
+
+  function setTab(name) {
+    var t = ui.timer.state;
+    if (name === 'algs' && t !== 'idle' && t !== 'stopped') return;  // finish the timed solve first
+    tab = name;
+    tabCube.classList.toggle('active', name === 'cube');
+    tabAlgs.classList.toggle('active', name === 'algs');
+    algsEl.style.display = name === 'algs' ? '' : 'none';
+    $('timer').style.display = name === 'cube' ? '' : 'none';
+    app.setKeysEnabled(name === 'cube');
+    refreshHints();
+  }
+  tabCube.addEventListener('click', function () { setTab('cube'); });
+  tabAlgs.addEventListener('click', function () { setTab('algs'); });
+
+  // ---------------------------------------------------------------------------
+  // Keyboard: Space / Escape go to the timer, H toggles hints, cube keys are handled by Baseline.
+  // ---------------------------------------------------------------------------
+  function isSpace(e) { return e.code === 'Space' || e.key === ' '; }
+
+  window.addEventListener('keydown', function (e) {
+    if (isSpace(e)) {
+      e.preventDefault();
+      if (tab === 'cube' && timerIdle() && (scrambleTimer || scrambling)) {
+        // Don't start inspection or a hold until the next scramble is on the cube.
+        if (scrambleTimer) applyTimerScramble(pendingScramble);
+        return;
+      }
+      if (tab === 'cube') ui.keyDown(e);
+      else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+      return;
+    }
+    if (tab !== 'cube') return;
+    if (e.key === 'Escape') { ui.keyDown(e); return; }
+    if (e.repeat || e.ctrlKey || e.metaKey) return;
+    var key = Baseline.eventKey(e);
+    if (!e.altKey && (key === 'KeyH' || key === 'h' || key === 'H')) { e.preventDefault(); toggleHints(); return; }
+    // A cube key queues a move: the layer highlight would be stale while it animates,
+    // and a delayed post-solve scramble must not overwrite it.
+    if (Baseline.keyToMove(key, e.shiftKey, e.altKey)) { app.view.highlightLayer(null); cancelPendingScramble(); }
+  });
+
+  window.addEventListener('keyup', function (e) {
+    if (!isSpace(e)) return;
+    e.preventDefault();
+    if (tab === 'cube') ui.keyUp(e);
+  });
+
+  // Scramble / Solve queue moves: drop the highlight now; the hint recomputes when they finish.
+  // Any of the three buttons replaces a pending post-solve scramble.
+  [scrambleBtn, solveBtn].forEach(function (b) {
+    b.addEventListener('click', function () { app.view.highlightLayer(null); cancelPendingScramble(); });
+  });
+  resetBtn.addEventListener('click', function () { cancelPendingScramble(); scrambling = false; });
+
+  refreshHints();
+  window.rubiksApp = { app: app, timer: ui, algTab: algTab };
+})();
+
+</script>
+</body>
+</html>

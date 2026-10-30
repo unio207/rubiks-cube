@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Algorithms Tab Dev</title>
+<style>
+  html, body { margin: 0; background: #15171c; color: #ddd; font: 14px system-ui, sans-serif; }
+  #status { padding: 12px 16px 0; color: #8a909c; }
+</style>
+</head>
+<body>
+<div id="status"></div>
+<div id="algs"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="core.js"></script>
+<script src="view3d.js"></script>
+<script src="algtab.js"></script>
+<script>
+  var tab = AlgTab.mount(document.getElementById('algs'));
+  var bad = Cube.ALGS.filter(function (e) { return !AlgTab.verifyCard(e).ok; });
+  document.getElementById('status').textContent = 'verifyCard: ' + (Cube.ALGS.length - bad.length) + '/' + Cube.ALGS.length + ' ok' +
+    (bad.length ? ' - failing: ' + bad.map(function (e) { return e.id; }).join(', ') : '');
+  // Console: tab.cards[0].view && tab.cards[0].view.selfCheck()
+</script>
+</body>
+</html>
