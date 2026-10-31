@@ -39,9 +39,9 @@ check('core is a running script', core && !/type=/.test(core.attrs));
 var appSrc = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 var body = core.code + '\n;\n' + solver.code + '\n;self.onmessage = function (e) {\n' +
   '  var out = { id: e.data.id };\n' +
-  '  try { out.hint = Solver.getHint(e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
+  '  try { out.hint = Solver[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
   '  self.postMessage(out);\n' + '};\n';
-check('app.js builds the worker body the same way', appSrc.indexOf("'  try { out.hint = Solver.getHint(e.data.state); }") >= 0);
+check('app.js builds the worker body the same way', appSrc.indexOf("'  try { out.hint = Solver[e.data.fn](e.data.state); }") >= 0);
 var replies = [];
 var sb = { self: null }; sb.self = sb; sb.postMessage = function (x) { replies.push(x); };
 vm.createContext(sb);
@@ -53,12 +53,25 @@ var worst = 0;
 for (var i = 0; i < 50; i++) {
   var st = C.applyAlg(C.solvedState(), C.randomScramble(25, { random: rnd }));
   var t0 = Date.now();
-  sb.onmessage({ data: { id: i + 1, state: st } });
+  sb.onmessage({ data: { id: i + 1, fn: 'getHint', state: st } });
   worst = Math.max(worst, Date.now() - t0);
 }
 check('worker answers every request with its id', replies.length === 50 && replies.every(function (r, k) { return r.id === k + 1 && r.hint && !r.error; }));
 check('worker hint (incl. first-call init) < 300 ms', worst < 300, worst);
 console.log('worker sandbox: worst reply ' + worst + ' ms');
+// Full CFOP solve through the worker: solves, stays well under a second.
+var worstSolve = 0, solveOk = true;
+for (var i = 0; i < 20; i++) {
+  var st = C.applyAlg(C.solvedState(), C.randomScramble(25, { random: rnd }));
+  var t0 = Date.now();
+  sb.onmessage({ data: { id: 100 + i, fn: 'solve', state: st } });
+  worstSolve = Math.max(worstSolve, Date.now() - t0);
+  var r = replies[replies.length - 1];
+  if (r.id !== 100 + i || r.error || !C.isSolved(C.applyAlg(st, r.hint.moves))) solveOk = false;
+}
+check('worker solve reaches solved for 20 scrambles', solveOk);
+check('worker solve < 1000 ms', worstSolve < 1000, worstSolve);
+console.log('worker sandbox: worst solve ' + worstSolve + ' ms');
 
 // ---- Static evidence for browser-only items ----
 var view = fs.readFileSync(path.join(root, 'src', 'view3d.js'), 'utf8');

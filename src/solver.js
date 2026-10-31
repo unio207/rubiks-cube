@@ -358,7 +358,130 @@
     return hint(8, [aufFor(state, Cube.isSolved)]);
   }
 
-  var Solver = { init: init, getHint: getHint, STAGE_NAMES: STAGE_NAMES };
+  // ---- Full CFOP solve, kept short: several optimal crosses, a beam over F2L pair orders,
+  // then the cheapest chain of last-layer algs (only the 20 Feature 2 algs). ----
+  var CROSS_MAX = 200, BEAM = 40;
+
+  // Every optimal cross solution (deduplicated by resulting state), up to CROSS_MAX.
+  function crossSolutions(state) {
+    var out = [], seen = {}, s0 = crossSlots(state);
+    function code(s) { return ((s[0] * 24 + s[1]) * 24 + s[2]) * 24 + s[3]; }
+    (function dfs(s, d, path) {
+      if (out.length >= CROSS_MAX) return;
+      if (d === 0) {
+        var key = Cube.applyAlg(state, path).join('');
+        if (!seen[key]) { seen[key] = 1; out.push(path.slice()); }
+        return;
+      }
+      for (var m = 0; m < 18; m++) {
+        var e = T.moves[m].e, n = [e[s[0]], e[s[1]], e[s[2]], e[s[3]]];
+        if (T.crossDist[code(n)] === d - 1) { path.push(FACE_MOVES[m]); dfs(n, d - 1, path); path.pop(); }
+      }
+    })(s0, T.crossDist[code(s0)], []);
+    return out;
+  }
+
+  // All ways (one step, else two) a last-layer group reaches its goal, shortest first.
+  function llOptions(state, group, goal, only) {
+    var algs = algsOf(group).filter(function (a) { return !only || a.id === only; }), steps = [];
+    U_TURNS.forEach(function (u) { algs.forEach(function (a) { steps.push({ setup: u, alg: a }); }); });
+    function run(s, st) { return Cube.applyAlg(st.setup ? Cube.applyMove(s, st.setup) : s, st.alg.alg); }
+    function seq(st) { return (st.setup ? [st.setup] : []).concat(Cube.algToString(st.alg.alg).split(' ')); }
+    var out = [];
+    steps.forEach(function (st) {
+      var s = run(state, st);
+      if (goal(s)) out.push({ setup: st.setup, alg: st.alg, moves: seq(st), state: s });
+    });
+    if (!out.length) {
+      steps.forEach(function (a) {
+        var mid = run(state, a);
+        steps.forEach(function (b) {
+          var s = run(mid, b);
+          if (goal(s)) out.push({ setup: a.setup, alg: a.alg, moves: seq(a).concat(seq(b)), state: s });
+        });
+      });
+    }
+    return out.sort(function (x, y) { return x.moves.length - y.moves.length; });
+  }
+
+  var LL_STAGES = [
+    { stage: 4, done: uEdgesDone, group: 'OLL edges', goal: function (s) { return uEdgesDone(s) && f2lDone(s); }, only: ollEdgeCase },
+    { stage: 5, done: uFaceDone, group: 'OLL corners', goal: function (s) { return uFaceDone(s) && f2lDone(s); } },
+    { stage: 6, done: cornersPermuted, group: 'PLL corners', goal: function (s) { return uFaceDone(s) && f2lDone(s) && cornersPermuted(s); } },
+    { stage: 7, done: solvedUpToU, group: 'PLL edges', goal: solvedUpToU }
+  ];
+
+  // Cheapest last layer from an F2L-solved state: try every alg choice per stage.
+  function solveLL(state, prefix) {
+    var best = null;
+    (function dfs(s, k, steps) {
+      while (k < LL_STAGES.length && LL_STAGES[k].done(s)) k++;
+      if (k === LL_STAGES.length) {
+        var auf = aufFor(s, Cube.isSolved), all = steps.concat(auf ? [{ stage: 8, name: 'AUF', moves: [auf] }] : []);
+        var len = simplify(prefix.concat.apply(prefix, all.map(function (x) { return x.moves; }))).length;
+        if (!best || len < best.len) best = { len: len, steps: all };
+        return;
+      }
+      var L = LL_STAGES[k];
+      llOptions(s, L.group, L.goal, L.only && L.only(s)).forEach(function (o) {
+        dfs(o.state, k + 1, steps.concat([{ stage: L.stage, name: o.alg.name, moves: o.moves }]));
+      });
+    })(state, 0, []);
+    return best;
+  }
+
+  // solve(state) -> { moves, steps: [{ stage, stageName, name, moves }] }; moves is the whole
+  // solution with adjacent same-face turns merged.
+  function solve(state) {
+    init();
+    if (Cube.isSolved(state)) return { moves: [], steps: [] };
+    var steps0 = [];
+    if (state[31] !== 'U') {
+      var rots = ['z2', 'x', "x'", 'z', "z'", 'x2'];
+      for (var r = 0; r < rots.length; r++) {
+        if (Cube.applyMove(state, rots[r])[31] === 'U') { steps0.push({ stage: 1, name: rots[r], moves: [rots[r]] }); break; }
+      }
+      state = Cube.applyMove(state, steps0[0].moves[0]);
+    }
+    function flat(steps) { var m = []; steps.forEach(function (x) { m = m.concat(x.moves); }); return m; }
+    function node(s, steps) { return { state: s, steps: steps, len: simplify(flat(steps)).length }; }
+
+    var beam = crossSolutions(state).map(function (mv) {
+      return node(Cube.applyAlg(state, mv), steps0.concat([{ stage: 2, name: 'Cross', moves: mv }]));
+    });
+    for (var level = 0; level < 4; level++) {
+      var next = [], seen = {};
+      beam.forEach(function (n) {
+        var solved = [];
+        PAIRS.forEach(function (p, k) { if (pairDone(n.state, p)) solved.push(k); });
+        if (solved.length === 4) { next.push(n); return; }
+        PAIRS.forEach(function (p, k) {
+          if (solved.indexOf(k) >= 0) return;
+          var mv = solvePair(n.state, k, solved);
+          if (!mv) return;
+          var s = Cube.applyAlg(n.state, mv), key = s.join('');
+          var c = node(s, n.steps.concat([{ stage: 3, name: p.name + ' pair', moves: mv }]));
+          if (!seen[key] || seen[key].len > c.len) seen[key] = c;
+        });
+      });
+      for (var key in seen) next.push(seen[key]);
+      next.sort(function (a, b) { return a.len - b.len; });
+      beam = next.slice(0, level === 3 ? next.length : BEAM);
+      if (!beam.length) throw new Error('F2L search failed');
+    }
+    var best = null;
+    beam.slice(0, BEAM).forEach(function (n) {
+      var ll = solveLL(n.state, flat(n.steps));
+      if (ll && (!best || ll.len < best.len)) best = { len: ll.len, steps: n.steps.concat(ll.steps) };
+    });
+    if (!best) throw new Error('No last-layer solution found');
+    var steps = best.steps.filter(function (x) { return x.moves.length; }).map(function (x) {
+      return { stage: x.stage, stageName: STAGE_NAMES[x.stage], name: x.name, moves: x.moves };
+    });
+    return { moves: simplify(flat(steps)), steps: steps };
+  }
+
+  var Solver = { init: init, getHint: getHint, solve: solve, STAGE_NAMES: STAGE_NAMES };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Solver;
   else root.Solver = Solver;

@@ -38,7 +38,7 @@
     try {
       var body = src + '\n;self.onmessage = function (e) {\n' +
         '  var out = { id: e.data.id };\n' +
-        '  try { out.hint = Solver.getHint(e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
+        '  try { out.hint = Solver[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
         '  self.postMessage(out);\n' +
         '};\n';
       var url = URL.createObjectURL(new Blob([body], { type: 'text/javascript' }));
@@ -64,18 +64,22 @@
         var cb = pending[id];
         if (!cb) return;
         delete pending[id];
-        try { cb(null, window.Solver.getHint(state)); } catch (err) { cb(String(err && err.message || err), null); }
+        try { cb(null, window.Solver[cb.fn](state)); } catch (err) { cb(String(err && err.message || err), null); }
       }, 0);
     }
 
+    // call('getHint' | 'solve', state, cb(err, result))
+    function call(fn, state, cb) {
+      var id = nextId++;
+      cb.state = state;
+      cb.fn = fn;
+      pending[id] = cb;
+      if (worker) worker.postMessage({ id: id, fn: fn, state: state });
+      else run(id, state);
+    }
     return {
-      getHint: function (state, cb) {
-        var id = nextId++;
-        cb.state = state;
-        pending[id] = cb;
-        if (worker) worker.postMessage({ id: id, state: state });
-        else run(id, state);
-      }
+      getHint: function (state, cb) { call('getHint', state, cb); },
+      solve: function (state, cb) { call('solve', state, cb); }
     };
   })();
 
@@ -181,6 +185,18 @@
     refreshHints();
   }
   hintsBtn.addEventListener('click', toggleHints);
+
+  // Solve button: play a short CFOP solution from the solver instead of rewinding history.
+  // If the cube changes before the solution arrives, it is dropped.
+  var solveId = 0;
+  app.hooks.solve = function () {
+    var id = ++solveId, state = app.getQueuedState();
+    solver.solve(state, function (err, res) {
+      if (id !== solveId || err || !res) return;
+      if (!Cube.isEqual(state, app.getQueuedState()) || timing) return;
+      app.applyMoves(res.moves);
+    });
+  };
   resetBtn.addEventListener('click', invalidateHint);   // runs after Baseline's own reset handler
 
   // ---------------------------------------------------------------------------

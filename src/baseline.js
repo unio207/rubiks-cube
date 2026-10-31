@@ -6,7 +6,7 @@
 
   var Cube = root.Cube || (typeof require === 'function' ? require('./core.js') : null);
 
-  var HELP_TEXT = 'U D L R F B: turn face  ·  Alt+face: wide turn  ·  M: middle slice  ·  X Y Z: rotate cube  ·  Shift: reverse  ·  drag to rotate the view';
+  var HELP_TEXT = 'U D L R F B: turn face  ·  Alt+face: wide turn  ·  M: middle slice  ·  X Y Z: rotate cube  ·  Shift: reverse  ·  drag to rotate the view  ·  scroll or pinch to zoom';
   var KEYS = { U: 'U', D: 'D', L: 'L', R: 'R', F: 'F', B: 'B', X: 'x', Y: 'y', Z: 'z', M: 'M' };
   var FACES = 'UDLRFB';
 
@@ -53,8 +53,9 @@
   //   view         extra options passed to CubeView.createCubeView
   //   onMove(move, state)        after each completed move (any source)
   //   onSolvedChange(solved)     when "solved and idle" changes
+  //   solve()                    replaces what the Solve button plays
   function init(opts) {
-    var hooks = { onMove: opts.onMove || null, onSolvedChange: opts.onSolvedChange || null };
+    var hooks = { onMove: opts.onMove || null, onSolvedChange: opts.onSolvedChange || null, solve: opts.solve || null };
     var view = root.CubeView.createCubeView(opts.container, opts.view || {});
     var history = createHistory(view.getState());
     var keysEnabled = true;
@@ -87,7 +88,8 @@
     }
 
     function scramble() { applyMoves(Cube.randomScramble(25), { fast: true }); }
-    function solve() { applyMoves(history.solveMoves()); }
+    // hooks.solve, if set, replaces the default (inverse of the history).
+    function solve() { if (hooks.solve) hooks.solve(); else applyMoves(history.solveMoves()); }
     function reset(state) {
       view.setState(state || Cube.solvedState());
       history.reset(view.getState());
