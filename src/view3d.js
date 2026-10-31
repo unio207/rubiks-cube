@@ -106,6 +106,7 @@
   //   duration     ms per turn (default 160); fastDuration ms per turn when {fast} (default 45)
   //   background   clear color (default 0x15171c); null = transparent
   //   distance     camera distance (default 9); theta/phi initial view angles in radians
+  //   zoom         mouse wheel / pinch zoom (default: on for full-size views, off for fixed-size mini cubes)
   //   state        initial core state (default Cube.solvedState())
   //   onMoveDone   function (move, state) called after each turn finishes
   function createCubeView(container, opts) {
@@ -302,13 +303,40 @@
       dirty = true;
     }
 
-    var drag = null;
+    var MIN_DIST = 6, MAX_DIST = 30;
+    var zoomable = interactive && (opts.zoom === undefined ? !fixedSize : opts.zoom);
+    function zoomBy(factor) {
+      dist = Math.max(MIN_DIST, Math.min(MAX_DIST, dist * factor));
+      updateCamera();
+    }
+
+    // One pointer drags the view; two pointers (touch) pinch to zoom.
+    var pointers = {};
+    var drag = null, pinch = null;
+    function pinchSpan() {
+      var ids = Object.keys(pointers);
+      var a = pointers[ids[0]], b = pointers[ids[1]];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
     function onDown(e) {
-      drag = { x: e.clientX, y: e.clientY, id: e.pointerId };
+      pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
       try { renderer.domElement.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      if (zoomable && Object.keys(pointers).length === 2) {
+        drag = null;
+        pinch = pinchSpan();
+        return;
+      }
+      drag = { x: e.clientX, y: e.clientY, id: e.pointerId };
       renderer.domElement.style.cursor = 'grabbing';
     }
     function onMove(e) {
+      if (pointers[e.pointerId]) pointers[e.pointerId] = { x: e.clientX, y: e.clientY };
+      if (pinch) {
+        var span = pinchSpan();
+        if (span > 0) zoomBy(pinch / span);
+        pinch = span;
+        return;
+      }
       if (!drag || e.pointerId !== drag.id) return;
       theta -= (e.clientX - drag.x) * 0.008;
       phi += (e.clientY - drag.y) * 0.008;
@@ -316,9 +344,15 @@
       updateCamera();
     }
     function onUp(e) {
+      delete pointers[e.pointerId];
+      if (pinch) { pinch = null; return; }
       if (!drag || e.pointerId !== drag.id) return;
       drag = null;
       renderer.domElement.style.cursor = 'grab';
+    }
+    function onWheel(e) {
+      e.preventDefault();
+      zoomBy(Math.exp(e.deltaY * 0.001));
     }
     if (interactive) {
       renderer.domElement.addEventListener('pointerdown', onDown);
@@ -326,6 +360,7 @@
       renderer.domElement.addEventListener('pointerup', onUp);
       renderer.domElement.addEventListener('pointercancel', onUp);
     }
+    if (zoomable) renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
 
     // ---- sizing ----
     function resize() {
