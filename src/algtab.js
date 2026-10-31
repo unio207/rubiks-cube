@@ -196,7 +196,13 @@
   // ---------- Browser UI ----------
 
   var CSS = [
-    '.at-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;padding:16px;box-sizing:border-box}',
+    '.at-filter{display:flex;flex-wrap:wrap;gap:6px;padding:16px 16px 0}',
+    '.at-filter button{background:#2a2e37;color:#ccc;border:1px solid #444a56;border-radius:16px;padding:5px 14px;font:inherit;font-size:13px;cursor:pointer}',
+    '.at-filter button:hover{background:#353a45}',
+    '.at-filter button.on{background:#3d7bdc;border-color:#3d7bdc;color:#fff}',
+    '.at-section-title{color:#ddd;font-size:16px;font-weight:600;margin:0;padding:18px 16px 0}',
+    '.at-section-title span{color:#8a909c;font-weight:400;font-size:13px;margin-left:8px}',
+    '.at-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;padding:12px 16px 16px;box-sizing:border-box}',
     '.at-card{background:#1e2128;border:1px solid #2f343e;border-radius:10px;padding:14px;color:#ddd;display:flex;flex-direction:column;gap:10px;min-width:0}',
     '.at-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}',
     '.at-name{font-weight:600;font-size:15px}',
@@ -225,10 +231,48 @@
     if (!document.getElementById('at-style')) {
       var st = el('style'); st.id = 'at-style'; st.textContent = CSS; document.head.appendChild(st);
     }
-    var grid = el('div', 'at-grid');
+    // Cards are grouped by layer (F2L, OLL edges, ...) in solve order; the filter shows one layer.
+    var grid = el('div');
     container.appendChild(grid);
+    var LAYERS = ['All', 'F2L', 'OLL', 'PLL'];
+    var filterBar = el('div', 'at-filter'), filterBtns = {};
+    LAYERS.forEach(function (name) {
+      filterBtns[name] = button(filterBar, name, 'Show ' + (name === 'All' ? 'all algorithms' : name + ' algorithms'),
+        function () { setFilter(name); });
+    });
+    grid.appendChild(filterBar);
+    var sections = [];
+    Cube.ALGS.forEach(function (entry) {
+      var sec = sections.filter(function (x) { return x.group === entry.group; })[0];
+      if (!sec) {
+        sec = { group: entry.group, layer: entry.group.split(' ')[0], title: el('h2', 'at-section-title', entry.group), grid: el('div', 'at-grid'), count: 0 };
+        grid.appendChild(sec.title);
+        grid.appendChild(sec.grid);
+        sections.push(sec);
+      }
+      sec.count++;
+    });
+    sections.forEach(function (sec) { sec.title.appendChild(el('span', null, sec.count + (sec.count === 1 ? ' alg' : ' algs'))); });
+    function sectionOf(entry) { return sections.filter(function (x) { return x.group === entry.group; })[0]; }
+
+    function setFilter(name) {
+      LAYERS.forEach(function (n) {
+        filterBtns[n].classList.toggle('on', n === name);
+        filterBtns[n].setAttribute('aria-pressed', n === name ? 'true' : 'false');
+      });
+      sections.forEach(function (sec) {
+        var show = name === 'All' || sec.layer === name;
+        sec.title.style.display = show ? '' : 'none';
+        sec.grid.style.display = show ? '' : 'none';
+      });
+      try { localStorage.setItem('rubiks-alg-filter', name); } catch (e) {}
+    }
+
     var live = [];   // cards with a live mini cube, oldest first
     var cards = Cube.ALGS.map(function (entry, i) { return makeCard(entry, i); });
+    var saved = null;
+    try { saved = localStorage.getItem('rubiks-alg-filter'); } catch (e) {}
+    setFilter(LAYERS.indexOf(saved) >= 0 ? saved : 'All');
 
     var io = null;
     if (typeof IntersectionObserver === 'function') {
@@ -272,7 +316,7 @@
       button(ctrl, 'Reset', 'Reset to the case', function () { resetCard(card); });
       root_.appendChild(ctrl);
 
-      grid.appendChild(root_);
+      sectionOf(entry).grid.appendChild(root_);
       card.el = root_;
       render(card);
       return card;
@@ -385,6 +429,7 @@
     // Without IntersectionObserver, a card's cube is created on its first click (placeholder or controls).
     return {
       cards: cards,
+      setFilter: setFilter,
       dispose: function () {
         if (io) io.disconnect();
         cards.forEach(releaseView);
