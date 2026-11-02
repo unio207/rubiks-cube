@@ -54,6 +54,7 @@
   //   onMove(move, state)        after each completed move (any source)
   //   onSolvedChange(solved)     when "solved and idle" changes
   //   solve()                    replaces what the Solve button plays
+  //   resolveKey(event)          move name for a keydown, or null (default: keyToMove; app.js uses KeyMap)
   function init(opts) {
     var hooks = { onMove: opts.onMove || null, onSolvedChange: opts.onSolvedChange || null, solve: opts.solve || null };
     var view = root.CubeView.createCubeView(opts.container, opts.view || {});
@@ -109,7 +110,7 @@
       if (!keysEnabled || e.repeat || e.ctrlKey || e.metaKey) return;
       var t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      var move = keyToMove(eventKey(e), e.shiftKey, e.altKey);
+      var move = opts.resolveKey ? opts.resolveKey(e) : keyToMove(eventKey(e), e.shiftKey, e.altKey);
       if (!move) return;
       e.preventDefault();
       applyMoves(move);

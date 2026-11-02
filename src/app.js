@@ -8,18 +8,40 @@
   var hintsBtn = $('hintsBtn'), tabCube = $('tabCube'), tabAlgs = $('tabAlgs'), tabScan = $('tabScan');
   var hintsEl = $('hints'), algsEl = $('algs'), scanEl = $('scan');
 
+  // Custom keybinds (Feature 8): every cube key goes through the saved keymap.
+  var keymap = KeyMap.load();
+  function keyAction(e) { return KeyMap.lookup(keymap, KeyMap.fromEvent(e)); }
+
   var app = Baseline.init({
     container: $('cube'),
     scrambleBtn: scrambleBtn,
     solveBtn: solveBtn,
     resetBtn: resetBtn,
     solvedLabel: $('solved'),
-    helpEl: $('help')
+    resolveKey: function (e) { var a = keyAction(e); return a && a !== 'hints' ? a : null; }
   });
-  $('help').textContent = Baseline.HELP_TEXT + '  ·  H: hints  ·  Space: timer';
+
+  // Bottom help line, generated from the bindings, with the Keys control at its end.
+  var helpText = document.createElement('span');
+  var keysBtn = document.createElement('button');
+  keysBtn.id = 'keysBtn';
+  keysBtn.tabIndex = -1;
+  keysBtn.textContent = 'Keys';
+  keysBtn.title = 'Change the keys that turn the cube';
+  $('help').appendChild(helpText);
+  $('help').appendChild(document.createTextNode('  ·  '));
+  $('help').appendChild(keysBtn);
+  function renderHelp() { helpText.textContent = KeyMap.helpText(keymap); }
+  renderHelp();
+  var keysPanel = KeyMap.createPanel({
+    getMap: function () { return keymap; },
+    setMap: function (m) { keymap = m; KeyMap.save(keymap); renderHelp(); },
+    onOpenChange: function (open) { app.setKeysEnabled(!open && tab === 'cube'); }
+  });
+  keysBtn.addEventListener('click', function () { keysPanel.toggle(); });
 
   // Top-bar buttons never keep focus, so Space can never press them.
-  [scrambleBtn, solveBtn, resetBtn, hintsBtn, tabCube, tabAlgs, tabScan].forEach(function (b) {
+  [scrambleBtn, solveBtn, resetBtn, hintsBtn, tabCube, tabAlgs, tabScan, keysBtn].forEach(function (b) {
     b.addEventListener('mousedown', function (e) { e.preventDefault(); });
     b.addEventListener('click', function () { b.blur(); });
   });
@@ -244,6 +266,7 @@
       app.setButtonsEnabled(!active);
       tabAlgs.disabled = active;
       tabScan.disabled = active;
+      keysBtn.disabled = active;
       refreshHints();
     }
   });
@@ -287,7 +310,8 @@
     scanEl.style.display = name === 'scan' ? '' : 'none';
     if (name === 'scan') scanTab.show(); else scanTab.hide();
     $('timer').style.display = name === 'cube' ? '' : 'none';
-    app.setKeysEnabled(name === 'cube');
+    if (name !== 'cube') keysPanel.close();
+    app.setKeysEnabled(name === 'cube' && !keysPanel.isOpen());
     refreshHints();
   }
   tabCube.addEventListener('click', function () { setTab('cube'); });
@@ -314,11 +338,11 @@
     if (tab !== 'cube') return;
     if (e.key === 'Escape') { ui.keyDown(e); return; }
     if (e.repeat || e.ctrlKey || e.metaKey) return;
-    var key = Baseline.eventKey(e);
-    if (!e.altKey && (key === 'KeyH' || key === 'h' || key === 'H')) { e.preventDefault(); toggleHints(); return; }
+    var action = keyAction(e);
+    if (action === 'hints') { e.preventDefault(); toggleHints(); return; }
     // A cube key queues a move: the layer highlight would be stale while it animates,
     // and a delayed post-solve scramble must not overwrite it.
-    if (Baseline.keyToMove(key, e.shiftKey, e.altKey)) { app.view.highlightLayer(null); cancelPendingScramble(); }
+    if (action) { app.view.highlightLayer(null); cancelPendingScramble(); }
   });
 
   window.addEventListener('keyup', function (e) {
@@ -335,5 +359,6 @@
   resetBtn.addEventListener('click', function () { cancelPendingScramble(); scrambling = false; });
 
   refreshHints();
-  window.rubiksApp = { app: app, timer: ui, algTab: algTab, scanTab: scanTab };
+  window.rubiksApp = { app: app, timer: ui, algTab: algTab, scanTab: scanTab, keysPanel: keysPanel,
+    getKeymap: function () { return keymap; } };
 })();

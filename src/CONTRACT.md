@@ -22,16 +22,16 @@
 - `centerColor(state, face)` returns the color of a face's center.
 
 ## Moves
-- Tokens: `U D L R F B`, `M` (follows L), `x y z` (follow R / U / F), and the wide moves `r l u d f b` (two layers). A token can take the suffix `'` or `2`; `2'` is read as `2`.
+- Tokens: `U D L R F B`, the slices `M` (follows L), `E` (follows D) and `S` (follows F), `x y z` (follow R / U / F), and the wide moves `r l u d f b` (two layers). A token can take the suffix `'` or `2`; `2'` is read as `2`.
 - `parseMove(tokenOrMove)` returns a move object:
   ```
   { name: "R'", base: 'R', turns: -1,     // turns: 1 | -1 | 2
     axis: 'x', layers: [1], amount: 1 }   // animation metadata
   ```
   - `axis`: `'x' | 'y' | 'z'`.
-  - `layers`: the coordinate values on that axis whose cubies turn. Examples: R = `[1]`, M = `[0]`, r = `[0,1]`, l = `[-1,0]`, x = `[-1,0,1]`.
+  - `layers`: the coordinate values on that axis whose cubies turn. Examples: R = `[1]`, M = E = S = `[0]`, r = `[0,1]`, l = `[-1,0]`, x = `[-1,0,1]`.
   - `amount`: signed quarter turns about the **+axis**, using the right-hand rule. Positive means counterclockwise when you look from the +axis side toward the origin. To animate, rotate the layer by `amount * Math.PI / 2` about the world axis (same sign as a Three.js rotation).
-  - A plain clockwise move ("clockwise looking at that face") has amount -1 for U, R, F, r, u, f, x, y, z and +1 for D, L, B, M, l, d, b. A prime move flips the sign; a 2 move doubles it (e.g. R2 = -2, L2 = +2).
+  - A plain clockwise move ("clockwise looking at that face") has amount -1 for U, R, F, S, r, u, f, x, y, z and +1 for D, L, B, M, E, l, d, b. So E = U D' y' and S = F' B z. A prime move flips the sign; a 2 move doubles it (e.g. R2 = -2, L2 = +2).
 - `parseAlg(stringOrArray)` returns an array of move objects. Tokens are split on whitespace and parentheses are ignored. An unknown token throws an `Error`.
 - `invertMove(m)` returns the inverse move object (an X2 stays X2). `invertAlg(alg)` returns an array of move objects, reversed and inverted.
 - `algToString(alg)` returns the alg as a string, e.g. `"R U R' U'"`.

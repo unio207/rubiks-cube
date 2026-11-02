@@ -178,6 +178,8 @@
       isIdle: function () { return !current && queue.length === 0; },
       clearQueue: function () { queue = []; },
       highlightLayer: highlightLayer,
+      setFocus: function (m) { setFocus(m); },
+      setArrow: function (p) { setArrow(p); },
       selfCheck: selfCheck,
       resize: resize,
       dispose: dispose,
@@ -207,6 +209,52 @@
         });
         placeObj(rec);
       });
+      if (focus) applyFocus();
+      dirty = true;
+    }
+
+    // Notation cards: dim every cubie outside the move's layer(s) (null = no dimming).
+    // A layer keeps its cubies when it turns, so the dimming stays right through the move.
+    var focus = null;
+    var DIM = new THREE.Color(0x23262c);
+    function applyFocus() {
+      records.forEach(function (rec) {
+        var on = !focus || inLayer(rec.pos, focus);
+        rec.stickers.forEach(function (st) {
+          st.mesh.material.color.setHex(Cube.COLOR_HEX[st.color]);
+          if (!on) st.mesh.material.color.lerp(DIM, 0.8);
+        });
+      });
+      dirty = true;
+    }
+    function setFocus(move) {
+      focus = move ? Cube.parseMove(move) : null;
+      applyFocus();
+    }
+
+    // Direction arrow: path = { points: [[x,y,z], ...], heads: [{ pos, dir }] } or null to remove.
+    var arrow = null;
+    function setArrow(path) {
+      if (arrow) {
+        cubeRoot.remove(arrow);
+        arrow.children.forEach(function (ch) { ch.geometry.dispose(); });
+        arrow.userData.mat.dispose();
+        arrow = null;
+      }
+      if (path) {
+        var mat = new THREE.MeshBasicMaterial({ color: 0xff4fd8 });
+        arrow = new THREE.Group();
+        arrow.userData.mat = mat;
+        var pts = path.points.map(function (p) { return new THREE.Vector3(p[0], p[1], p[2]); });
+        arrow.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 64, 0.08, 8, false), mat));
+        path.heads.forEach(function (h) {
+          var cone = new THREE.Mesh(new THREE.ConeGeometry(0.32, 0.7, 16), mat);
+          cone.position.set(h.pos[0], h.pos[1], h.pos[2]);
+          cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(h.dir[0], h.dir[1], h.dir[2]).normalize());
+          arrow.add(cone);
+        });
+        cubeRoot.add(arrow);
+      }
       dirty = true;
     }
 
@@ -437,6 +485,7 @@
       disposed = true;
       root.cancelAnimationFrame(raf);
       highlightLayer(null);
+      setArrow(null);
       root.removeEventListener('resize', resize);
       if (ro) ro.disconnect();
       bodyGeo.dispose(); stickerGeo.dispose();
