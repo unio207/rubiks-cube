@@ -15,11 +15,11 @@ A single-file browser Rubik's cube game: a 3D cube with CFOP hints, an Algorithm
 | Solve button plays a short CFOP solution (`Solver.solve`), not a history rewind | Baseline "Solve" (changed later) | Done, on `main` |
 | 2. Algorithms tab, 20 algs, All/F2L/OLL/PLL filter | Feature 2 | Done, on `main` |
 | 3. Timer (inspection, ao5/ao12, localStorage) | Feature 3 | Done, on `main` |
-| 4. Scan tab: net editor, validator, webcam scan | Feature 4 | Done on branch `scan` (commit de9cfc6 and later). **Not merged, not pushed.** |
+| 4. Scan tab: net editor, validator, webcam scan | Feature 4 | Done, on `main` (merged 2026-11-02) |
 
 Open items:
 - Feature 4 has **not been tried with a real webcam and a physical cube**. It was verified with unit tests and in Chrome with a fake canvas camera stream (see Testing). Real lighting is the remaining risk; red/orange is the hard pair.
-- The user still needs to decide whether to merge `scan` into `main` and push. Don't push without being asked.
+- Don't push without being asked.
 - Known nit (left alone on purpose): after "Load onto cube", the timer panel still shows its previous scramble text.
 
 ## Layout
