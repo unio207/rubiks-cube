@@ -313,7 +313,13 @@
       for (var k = 0; k < 6; k++) cost += dist(centerLab[k], PALETTE_LAB[o.centers[k]]);
       if (cost < bestCost) { bestCost = cost; bestO = o; }
     });
-    var letters = bestO.centers.split('');   // letters[k] = colour of the centre at CENTERS[k]
+    return label(labs, bestO.centers.split(''));   // letters[k] = colour of the centre at CENTERS[k]
+  }
+
+  // Colours for all 54 Lab readings, given the centre colours: balanced assignment to the centres,
+  // refined against each colour's mean. Only which stickers share a face matters, not where they are.
+  function label(labs, letters) {
+    var centerLab = CENTERS.map(function (i) { return labs[i]; });
     var out = assign(labs, letters, centerLab);
     // A single centre is a noisy reference: refine against the mean of each colour's 9 stickers.
     for (var iter = 0; iter < 4; iter++) {
@@ -385,6 +391,198 @@
     return a[a.length >> 1];
   }
 
+
+  // ---------------------------------------------------------------------------
+  // Captures in any order and rotation (Feature 5).
+  // ---------------------------------------------------------------------------
+  // BASE[f][k]: facelet of face f at camera cell k when the face is held as in its guided step.
+  var BASE = {};
+  STEPS.forEach(function (st) { BASE[st.face] = st.cells; });
+  // A quarter turn of the picture: cell k of the turned picture shows cell QT[k] of the original.
+  var QT = [6, 3, 0, 7, 4, 1, 8, 5, 2];
+  var ROT = [[0, 1, 2, 3, 4, 5, 6, 7, 8]];
+  for (var q = 1; q < 4; q++) ROT.push(ROT[q - 1].map(function (k) { return QT[k]; }));
+
+  // Lookup of real pieces on the solved-centre cube, by colour code (corners in cyclic order, edges
+  // either way round) -> piece number.
+  var CODE = {}; FACES.forEach(function (f, i) { CODE[f] = i; });
+  var CORNER_OF = new Int8Array(216).fill(-1), EDGE_OF = new Int8Array(36).fill(-1);
+  CORNERS.forEach(function (c, k) {
+    for (var t = 0; t < 3; t++) {
+      var h = rotateArr(c.home, t);
+      CORNER_OF[CODE[h[0]] * 36 + CODE[h[1]] * 6 + CODE[h[2]]] = k;
+    }
+  });
+  EDGES.forEach(function (e, k) {
+    EDGE_OF[CODE[e.home[0]] * 6 + CODE[e.home[1]]] = k;
+    EDGE_OF[CODE[e.home[1]] * 6 + CODE[e.home[0]]] = k;
+  });
+  // How many of the 20 slots hold a real piece that no other slot holds (state with solved centres).
+  function realPieces(s) {
+    var seen = 0, n = 0, i, p;
+    for (i = 0; i < CORNERS.length; i++) {
+      var ci = CORNERS[i].idx;
+      p = CORNER_OF[CODE[s[ci[0]]] * 36 + CODE[s[ci[1]]] * 6 + CODE[s[ci[2]]]];
+      if (p >= 0 && !(seen & (1 << p))) { seen |= 1 << p; n++; }
+    }
+    for (i = 0; i < EDGES.length; i++) {
+      var ei = EDGES[i].idx;
+      p = EDGE_OF[CODE[s[ei[0]]] * 6 + CODE[s[ei[1]]]];
+      if (p >= 0 && !(seen & (1 << (p + 8)))) { seen |= 1 << (p + 8); n++; }
+    }
+    return n;
+  }
+  function score(s) { return realPieces(s) + (validate(s).ok ? 1 : 0); }   // 21 = a valid cube
+
+  function permutations(a) {
+    if (a.length <= 1) return [a];
+    var out = [];
+    a.forEach(function (x, i) {
+      permutations(a.slice(0, i).concat(a.slice(i + 1))).forEach(function (p) { out.push([x].concat(p)); });
+    });
+    return out;
+  }
+  var PERMS = permutations(FACES);
+
+  // assemble(captures) -> { state, rearranged }. captures[j] = 9 [r,g,b] in camera cell order.
+  // The guided order is tried first. Otherwise each capture's face comes from its centre colour
+  // and its rotation from the shared pieces. Step 1 ends up as the front, with the side at the top
+  // of its picture up.
+  function assemble(captures) {
+    var guided = classify(readingsFromCaptures(captures));
+    if (validate(guided).ok) return { state: guided, rearranged: false };
+    var guidedScore = validCenters(guided) ? score(normalize(guided).state) : -1;
+
+    var flat = [];
+    captures.forEach(function (c) { c.forEach(function (rgb) { flat.push(fullBright(rgb)); }); });
+    var labs = balance(flat).map(toLab);   // labs[j * 9 + k]
+    // Colour frame: the capture whose centre is colour f goes on face f, so the centres are solved.
+    var cands = PERMS.map(function (perm) {   // perm[j] = face (= centre colour) of capture j
+      var cost = 0;
+      for (var j = 0; j < 6; j++) cost += dist(labs[j * 9 + 4], PALETTE_LAB[perm[j]]);
+      return { perm: perm, cost: cost };
+    }).sort(function (a, b) { return a.cost - b.cost; }).slice(0, 6);
+
+    var best = null;
+    cands.forEach(function (cand) {
+      var perm = cand.perm, frame = new Array(54);
+      perm.forEach(function (f, j) { BASE[f].forEach(function (fi, k) { frame[fi] = labs[j * 9 + k]; }); });
+      var cols = label(frame, CENTERS.map(function (i) { return FACES[Math.floor(i / 9)]; }));
+      var capCols = perm.map(function (f) { return BASE[f].map(function (fi) { return cols[fi]; }); });
+      var s = new Array(54), r = [0, 0, 0, 0, 0, 0];
+      for (var combo = 0; combo < 4096; combo++) {
+        for (var j = 0; j < 6; j++) {
+          r[j] = (combo >> (2 * j)) & 3;
+          var map = ROT[r[j]], base = BASE[perm[j]], cc = capCols[j];
+          for (var k = 0; k < 9; k++) s[base[map[k]]] = cc[k];
+        }
+        var sc = realPieces(s);
+        if (best && sc < best.score) continue;
+        if (sc === 20) sc += validate(s).ok ? 1 : 0;
+        if (!best || sc > best.score) best = { score: sc, state: s.slice(), perm: perm, r: r.slice() };
+      }
+    });
+    if (!best || best.score <= guidedScore) return { state: guided, rearranged: false };
+
+    // Orient: step 1's face to the front, the face across the top edge of its picture up.
+    var f0 = best.perm[0], top = BASE[f0][ROT[best.r[0]][1]], pos = FL[top].pos, up = null;
+    FL.forEach(function (f, i) {
+      if (i !== top && f.pos.join() === pos.join()) up = faceOfNormal(f.normal);
+    });
+    var o = ORIENTATIONS.filter(function (x) { return x.centers[2] === f0 && x.centers[0] === up; })[0];
+    return { state: Cube.applyAlg(best.state, o.alg), rearranged: true };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auto-capture (Feature 5).
+  // ---------------------------------------------------------------------------
+  function luma(c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; }
+
+  // frameInfo(data, w, h, x0, y0, size) -> { cells, even, gaps }. cells: as sampleGrid. even[k]: the
+  // share of cell k's middle that is close to its median (1 = one even colour). gaps: how many of
+  // the 12 places between neighbouring cells are dark, like the plastic between stickers.
+  function frameInfo(data, w, h, x0, y0, size) {
+    var cells = sampleGrid(data, w, h, x0, y0, size, 0.5), cell = size / 3, even = [];
+    function px(x, y) {
+      x = Math.round(x); y = Math.round(y);
+      if (x < 0 || y < 0 || x >= w || y >= h) return null;
+      var p = (y * w + x) * 4;
+      return [data[p], data[p + 1], data[p + 2]];
+    }
+    for (var r = 0; r < 3; r++) for (var c = 0; c < 3; c++) {
+      var m = cells[r * 3 + c], half = cell / 4, near = 0, all = 0, step = Math.max(1, half / 5);
+      for (var y = y0 + (r + 0.5) * cell - half; y < y0 + (r + 0.5) * cell + half; y += step) {
+        for (var x = x0 + (c + 0.5) * cell - half; x < x0 + (c + 0.5) * cell + half; x += step) {
+          var v = px(x, y);
+          if (!v) continue;
+          all++;
+          var d0 = v[0] - m[0], d1 = v[1] - m[1], d2 = v[2] - m[2];
+          if (d0 * d0 + d1 * d1 + d2 * d2 < 45 * 45) near++;
+        }
+      }
+      even.push(all ? near / all : 0);
+    }
+    // Between two cells, the darkest column (or row) in a band around the expected border, averaged
+    // along the middle of the border, against the darker of the two cells.
+    var gaps = 0, band = cell * 0.2;
+    function darkest(a, b, line, vertical) {
+      var lo = Infinity;
+      for (var t = line - band; t <= line + band; t++) {
+        var sum = 0, n = 0;
+        for (var u = a; u < b; u++) {
+          var v = vertical ? px(t, u) : px(u, t);
+          if (v) { sum += luma(v); n++; }
+        }
+        if (n) lo = Math.min(lo, sum / n);
+      }
+      return lo;
+    }
+    for (var i = 0; i < 3; i++) for (var j = 1; j < 3; j++) {
+      var a = y0 + (i + 0.3) * cell, b = y0 + (i + 0.7) * cell;   // vertical border, row i
+      if (darkest(a, b, x0 + j * cell, true) < 0.6 * Math.min(luma(cells[i * 3 + j - 1]), luma(cells[i * 3 + j]))) gaps++;
+      a = x0 + (i + 0.3) * cell; b = x0 + (i + 0.7) * cell;       // horizontal border, column i
+      if (darkest(a, b, y0 + j * cell, false) < 0.6 * Math.min(luma(cells[(j - 1) * 3 + i]), luma(cells[j * 3 + i]))) gaps++;
+    }
+    return { cells: cells, even: even, gaps: gaps };
+  }
+
+  // Whether 9 readings show the same face as a capture (in any rotation), ignoring brightness.
+  function sameFace(a, b) {
+    var la = a.map(function (c) { return toLab(fullBright(c)); }), lb = b.map(function (c) { return toLab(fullBright(c)); });
+    return ROT.some(function (map) {
+      for (var k = 0; k < 9; k++) if (weighted(la[k], lb[map[k]]) > 14) return false;
+      return true;
+    });
+  }
+
+  // createAutoCapture() -> { feed(info, others) -> 'capture' | 'holding' | 'waiting', reset() }.
+  // Feed it a frameInfo about every 250 ms; `others` are the captures of the other steps. It returns
+  // 'capture' once a face-like view has been steady for STEADY frames, then waits for movement.
+  function createAutoCapture(opts) {
+    opts = opts || {};
+    var STEADY = opts.steady || 3, prev = null, steady = 0, armed = true;
+    function faceLike(info) {
+      if (!info.even.every(function (e) { return e >= 0.7; })) return false;
+      var cols = {};
+      info.cells.forEach(function (c) { cols[nearestColor(c)] = true; });
+      return Object.keys(cols).length >= 2 || info.gaps >= 9;
+    }
+    return {
+      feed: function (info, others) {
+        var cur = info.cells.map(toLab), diff = Infinity;
+        if (prev) { diff = 0; for (var k = 0; k < 9; k++) diff = Math.max(diff, dist(prev[k], cur[k])); }
+        prev = cur;
+        if (diff > 25 && diff !== Infinity) armed = true;
+        if (!armed || !(diff < 8) || !faceLike(info)) { steady = 0; return 'waiting'; }
+        if ((others || []).some(function (o) { return o && sameFace(info.cells, o); })) { steady = 0; return 'waiting'; }
+        if (++steady < STEADY) return 'holding';
+        steady = 0; armed = false;
+        return 'capture';
+      },
+      reset: function () { prev = null; steady = 0; armed = true; }
+    };
+  }
+
   var Scan = {
     ORIENTATIONS: ORIENTATIONS,
     CENTERS: CENTERS,
@@ -399,7 +597,11 @@
     nearestColor: nearestColor,
     classify: classify,
     readingsFromCaptures: readingsFromCaptures,
-    sampleGrid: sampleGrid
+    sampleGrid: sampleGrid,
+    assemble: assemble,
+    frameInfo: frameInfo,
+    sameFace: sameFace,
+    createAutoCapture: createAutoCapture
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Scan;

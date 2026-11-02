@@ -16,6 +16,7 @@ A single-file browser Rubik's cube game: a 3D cube with CFOP hints, an Algorithm
 | 2. Algorithms tab, 20 algs, All/F2L/OLL/PLL filter | Feature 2 | Done, on `main` |
 | 3. Timer (inspection, ao5/ao12, localStorage) | Feature 3 | Done, on `main` |
 | 4. Scan tab: net editor, validator, webcam scan | Feature 4 | Done, on `main` (merged 2026-11-02) |
+| 5. Low-effort scanning: auto-capture, any order/rotation, exposure lock | Feature 5 | Done on branch `claude/auto-scan-discussion-z453a0`, not merged |
 
 Open items:
 - Feature 4 has **not been tried with a real webcam and a physical cube**. It was verified with unit tests and in Chrome with a fake canvas camera stream (see Testing). Real lighting is the remaining risk; red/orange is the hard pair.
@@ -27,13 +28,8 @@ Open items:
 The user moved to a cloud session so work continues with their PC off. The local transcript doesn't carry over; this section does.
 
 - **User feedback from real scanning:** red/orange kept getting mixed up, and yellow was often read as green. Root cause: matching used absolute brightness, and webcams expose dark (dim yellow is olive, which is nearer green; dim orange is nearer red). Fixed in f49c193 (`fullBright` in `src/scan.js`: readings are scaled to full brightness before matching, in both the live tint and `classify`), with two regression tests. **Not yet re-tested by the user on a real webcam.** If it still misreads, ask them to run `copy(JSON.stringify(rubiksApp.scanTab.captures()))` in the console after scanning and paste the result, so tests can use their real readings.
-- **Next feature under discussion: make scanning need as little user effort as possible.** Brainstorming had just started and nothing is agreed or built yet. Before building, write a spec section and get the user's approval. Ideas raised so far (Claude's, not yet confirmed by the user):
-  - auto-capture when a face is held steady in the guide (frame-to-frame stability plus nine distinct sticker-like cells), with no Capture button needed;
-  - auto-advance to the next step, and detect which face is shown from its centre colour (so order mistakes are caught or tolerated);
-  - lock camera exposure and white balance after the first capture (best-effort `applyConstraints`; not every camera supports it);
-  - possibly accept any face order and work out each face's position from centres and shared edges.
-- **AI vs algorithmic (discussed):** Claude recommended staying algorithmic. It's instant, offline, free and private, fits the static single-file page, and the cube's own rules (9 per colour, real pieces, solvable) catch most errors. A vision-LLM API would need a server or the user's key (GitHub Pages can't hide one), costs per scan, is slow, sends images to a third party, and can invent stickers. An in-browser trained model needs a custom model and adds MBs. AI might be worth it only to find the cube anywhere in the frame, if lining it up turns out to be the real pain. The user hasn't decided.
-- **Open question that was pending to the user:** "Thinking back to your last scan, which part felt like the most hassle?" Ask it again before designing.
+- **Feature 5 (low-effort scanning)** was agreed and built (spec section "Feature 5"): auto-capture when a face is held steady (`Scan.createAutoCapture`, `Scan.frameInfo`), auto-advance, faces accepted in any order and rotation (`Scan.assemble`: guided order first, else centre colours plus a 4^6 rotation search that maximises real pieces), and a best-effort exposure/white-balance lock after the first capture. Verified with unit tests and headless Chromium with a fake canvas camera (shuffled, turned faces, no clicks). **Not yet tried on a real webcam.** The user decided against AI for finding the cube in the frame.
+- **AI vs algorithmic:** staying algorithmic (instant, offline, private, fits the static page).
 
 ## Layout
 

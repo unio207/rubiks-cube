@@ -188,5 +188,94 @@ check('nearestColor', S.nearestColor([240, 100, 20]) === 'L' && S.nearestColor([
   check('sampleGrid reads all 9 cells', JSON.stringify(got) === JSON.stringify(cols), got);
 })();
 
+
+// 7. Feature 5: captures in any order and rotation give the same state as the guided order.
+(function () {
+  var QT = [6, 3, 0, 7, 4, 1, 8, 5, 2];
+  function turn(cap, q) { for (var i = 0; i < q; i++) cap = QT.map(function (k) { return cap[k]; }); return cap; }
+  var okG = 0, okA = 0, flagged = 0, N = 60, t0 = Date.now();
+  for (var k = 0; k < N; k++) {
+    var st = C.applyAlg(randomState(30), pick(S.ORIENTATIONS).alg);
+    var reads = camera(st, pick([LIGHTS.neutral, LIGHTS.dim, LIGHTS.warm, LIGHTS.cool]));
+    var caps = S.STEPS.map(function (sp) { return sp.cells.map(function (f) { return reads[f]; }); });
+    var g = S.assemble(caps);
+    if (C.isEqual(g.state, st) && !g.rearranged) okG++;
+    // Shuffle steps 2-6 and turn every picture (step 1 too); step 1 stays first.
+    var order = [1, 2, 3, 4, 5].sort(function () { return rnd() - 0.5; });
+    var q0 = Math.floor(rnd() * 4);
+    var mixed = [turn(caps[0], q0)].concat(order.map(function (j) { return turn(caps[j], Math.floor(rnd() * 4)); }));
+    var a = S.assemble(mixed);
+    // Expected: the guided state, then turned so the top of step 1's (turned) picture is up: a
+    // quarter turn of the picture is a z-rotation of the whole cube.
+    var want = st;
+    for (var i = 0; i < q0; i++) want = C.applyAlg(want, ['z']);
+    if (C.isEqual(a.state, want)) okA++;
+    if (a.rearranged || q0 === 0 && order.join() === '1,2,3,4,5') flagged++;
+  }
+  console.log('assemble: guided ' + okG + '/' + N + ', any order ' + okA + '/' + N + ' (' + (Date.now() - t0) + ' ms)');
+  check('assemble keeps the guided result', okG === N, okG);
+  check('assemble recovers any order and rotation', okA === N, okA);
+  check('assemble says when faces were rearranged', flagged === N, flagged);
+  // A partly solved cube (F2L done: whole D face yellow, in the CFOP hold) also assembles.
+  var mid = C.applyAlg(C.solvedCfop(), "R U R' U R U2 R' U2 F R U R' U' F'");
+  var mr = camera(mid, LIGHTS.neutral);
+  var mc = S.STEPS.map(function (sp) { return sp.cells.map(function (f) { return mr[f]; }); });
+  var mixedMid = [mc[0], turn(mc[5], 1), mc[2], turn(mc[4], 3), mc[1], turn(mc[3], 2)];
+  check('mid-solve cube assembles in any order', C.isEqual(S.assemble(mixedMid).state, mid));
+})();
+
+// 8. Feature 5: frameInfo and the auto-capture state machine.
+(function () {
+  var W = 160, H = 120, X0 = 20, Y0 = 0, SIZE = 120, CELL = 40;
+  // faceCols: 9 colours or null for a blank wall; gap: dark plastic between stickers.
+  function image(faceCols, opts) {
+    opts = opts || {};
+    var data = new Uint8ClampedArray(W * H * 4), dx = opts.dx || 0;
+    for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) {
+      var p = (y * W + x) * 4, c = opts.bg || [120, 110, 100], cx = x - X0 - dx, cy = y - Y0;
+      if (faceCols && cx >= 0 && cx < SIZE && cy >= 0 && cy < SIZE) {
+        var inX = cx % CELL, inY = cy % CELL;
+        c = (opts.gap === false || inX > 3 && inX < CELL - 4 && inY > 3 && inY < CELL - 4)
+          ? faceCols[Math.floor(cy / CELL) * 3 + Math.floor(cx / CELL)] : [15, 15, 18];
+      }
+      if (opts.noisy) c = c.map(function (v) { return clamp(v + (rnd() - 0.5) * 140); });
+      data[p] = c[0]; data[p + 1] = c[1]; data[p + 2] = c[2]; data[p + 3] = 255;
+    }
+    return S.frameInfo(data, W, H, X0, Y0, SIZE);
+  }
+  var scr = randomState(25), faceA = scr.slice(18, 27).map(function (c) { return TRUE[c]; });
+  var faceB = scr.slice(0, 9).map(function (c) { return TRUE[c]; });
+  var uni = [0, 1, 2, 3, 4, 5, 6, 7, 8].map(function () { return TRUE.D; });
+  var a = image(faceA);
+  check('frameInfo reads cells', a.cells.every(function (c, k) { return c.join() === faceA[k].join(); }), a.cells);
+  check('frameInfo: stickers are even', a.even.every(function (e) { return e > 0.9; }), a.even);
+  check('frameInfo: gaps found', a.gaps === 12, a.gaps);
+  check('frameInfo: no gaps on a stickerless face', image(uni, { gap: false }).gaps === 0);
+  check('frameInfo: no gaps on a wall', image(null).gaps === 0);
+  check('frameInfo: noise is uneven', image(faceA, { noisy: true }).even.some(function (e) { return e < 0.7; }));
+
+  function run(frames, others) {
+    var ac = S.createAutoCapture(), out = [];
+    frames.forEach(function (f) { out.push(ac.feed(f, others)); });
+    return out;
+  }
+  function n(f, k) { var a = []; for (var i = 0; i < k; i++) a.push(f); return a; }
+  function count(list) { return list.filter(function (x) { return x === 'capture'; }).length; }
+  var steadyA = run(n(a, 12));
+  check('steady face captured once', count(steadyA) === 1 && steadyA[3] === 'capture', steadyA);
+  check('holding shown before capture', steadyA[1] === 'holding');
+  var b = image(faceB);
+  check('next face captured after moving', count(run(n(a, 5).concat([image(faceB, { dx: 15 })], n(b, 5)))) === 2);
+  check('a face already captured is ignored', count(run(n(a, 8), [null, faceA.map(function (c) { return c.map(function (v) { return v * 0.7; }); })])) === 0);
+  check('the same face turned is ignored', S.sameFace(faceA, [6, 3, 0, 7, 4, 1, 8, 5, 2].map(function (k) { return faceA[k]; })));
+  check('different faces are not the same', !S.sameFace(faceA, faceB));
+  check('uniform face with gaps captured', count(run(n(image(uni), 6))) === 1);
+  check('uniform face without gaps not captured', count(run(n(image(uni, { gap: false }), 6))) === 0);
+  check('blank wall not captured', count(run(n(image(null), 8))) === 0);
+  var moving = []; for (var i = 0; i < 10; i++) moving.push(image(i % 2 ? faceA : faceB));
+  check('moving view not captured', count(run(moving)) === 0);
+  check('noisy view not captured', count(run([0, 1, 2, 3, 4, 5].map(function () { return image(faceA, { noisy: true }); }))) === 0);
+})();
+
 console.log('scan tests: ' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;
