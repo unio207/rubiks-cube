@@ -163,7 +163,7 @@
     });
 
     var state;            // core state, updated on every completed turn
-    var queue = [];       // pending { move, fast }
+    var queue = [];       // pending { move, fast, dur }
     var current = null;   // { move, fast, start, dur, objs }
     var dirty = true;
     var disposed = false;
@@ -211,10 +211,12 @@
     }
 
     // moves: a move token, move object, alg string, or array of these.
+    // o.fast: play at fastDuration; o.duration: ms per turn for these moves (overrides both).
     function enqueue(moves, o) {
       var fast = !!(o && o.fast);
+      var dur = (o && o.duration > 0) ? o.duration : 0;
       var list = (typeof moves === 'object' && !Array.isArray(moves)) ? [moves] : moves;
-      Cube.parseAlg(list).forEach(function (m) { queue.push({ move: m, fast: fast }); });
+      Cube.parseAlg(list).forEach(function (m) { queue.push({ move: m, fast: fast, dur: dur }); });
     }
 
     function startNext(now) {
@@ -223,7 +225,7 @@
       records.forEach(function (rec) { if (inLayer(rec.pos, item.move)) objs.push(rec.obj); });
       pivot.rotation.set(0, 0, 0);
       objs.forEach(function (o) { pivot.attach(o); });
-      current = { move: item.move, start: now, dur: item.fast ? fastDuration : duration, objs: objs };
+      current = { move: item.move, start: now, dur: item.dur || (item.fast ? fastDuration : duration), objs: objs };
     }
 
     // Leave the pivot at the final angle, move cubies back to cubeRoot and snap them to exact values
