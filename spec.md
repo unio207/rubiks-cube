@@ -6,7 +6,7 @@ Build a single-file browser Rubik's cube game, rubiks-cube.html, from the spec b
 - Node is available for running tests on the cube logic if you want; tests can live in a separate file.
 
 ## Scope
-In: Baseline rebuild, Feature 1 (hints), Feature 2 (algorithms tab), Feature 3 (timer), acceptance checklist. Features 4 and 5 were added later.
+In: Baseline rebuild, Feature 1 (hints), Feature 2 (algorithms tab), Feature 3 (timer), acceptance checklist. Features 4, 5 and 6 were added later.
 Out: anything not listed here. No unsolicited features.
 
 ## Baseline (rebuild exactly)
@@ -104,6 +104,23 @@ Acceptance for Feature 5:
 - Captures given in any order and any rotation, with camera noise, give the same state as captures in the guided order.
 - The auto-capture logic (in `scan.js`, no DOM) captures a steady face exactly once, waits for movement, ignores a repeated face, captures a uniform face only when it has gaps, and ignores a blank or moving view.
 - In a browser with a fake camera that shows the six faces in turn, without pressing Capture, the net fills in and validates.
+
+## Feature 6: Race (added after Feature 5)
+After scrambling, or loading a scanned cube, race the digital cube with a real one: the digital cube solves itself like a speedcuber while I solve my physical cube.
+- **Race mode of the timer.** A "Race" checkbox in the timer panel on the Cube tab (off by default). When it is on, a row below it sets the ghost's target: a time in seconds, or "Use my PB". Hold space and release on green as in Feature 3, with optional inspection.
+- **The ghost.** On release, the digital cube solves itself from its current state with the `Solver.solve` solution, while my timer runs.
+- **Pacing.** A human-like CFOP rhythm, not a constant rate: a recognition pause before each stage (cross, each F2L pair, OLL, PLL, AUF); slower turning in the cross and F2L, fast bursts inside last-layer algorithms; small random variation from move to move; double turns and cube rotations take longer than quarter turns. Everything is scaled so the ghost finishes within a few percent of the target.
+- **Target time.** A set time in seconds (default 20), remembered in localStorage with the Race and PB choices (wrapped in try/catch). "Use my PB" uses the best non-DNF single in the session, including +2. With no PB yet, the set time is used and the panel says so. Turns can't animate faster than about 60 ms (90 ms for double turns and rotations); if the target is faster than that allows for this solution, the panel says so and the ghost takes the fastest time it can.
+- **During a race.** Face and rotation keys don't move the digital cube. Scramble, Solve, Reset, Hints and the other tabs are disabled, as during a timed solve, until both the ghost and I have finished. The digital cube reaching solved doesn't stop my timer: I stop it with space, and Escape stops it as a DNF, as in Feature 3.
+- **Result.** When the ghost finishes, the panel shows its time while my timer keeps running. When I stop, it shows both times, who won and by how much (a DNF loses; if the ghost is still solving, I won and its time appears when it finishes). My time is saved to the session as a normal solve, marked "race" in the list. The ghost's time is not saved and isn't in the session stats.
+- If the cube is already solved when I try to start a race, it doesn't start, and the panel says to scramble first.
+
+Acceptance for Feature 6:
+- The pacing schedule (pure, in `race.js`) finishes within 2% of the target for 200 seeded scrambles at targets from 8 s to 60 s, and reports a cap when the target is below the animation limit.
+- Every stage starts with a pause, last-layer turns are faster than F2L turns, and double turns take longer than quarter turns in the same stage.
+- The PB lookup skips DNFs, counts +2, and returns none for an empty or all-DNF session; the target falls back to the set time with a note.
+- In race mode, the cube becoming solved doesn't stop the timer; space does, and the entry is saved with its race mark and survives a reload; stats are unchanged by the ghost.
+- In a browser: scramble, Race with an 8 s target, release space: the digital cube solves in about 8 s, my timer keeps running after it, and pressing space shows both times and the winner.
 
 ## Acceptance checklist
 - Baseline behaves exactly as described.

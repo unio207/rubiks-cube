@@ -1025,7 +1025,7 @@
     });
 
     var state;            // core state, updated on every completed turn
-    var queue = [];       // pending { move, fast }
+    var queue = [];       // pending { move, fast, dur }
     var current = null;   // { move, fast, start, dur, objs }
     var dirty = true;
     var disposed = false;
@@ -1073,10 +1073,12 @@
     }
 
     // moves: a move token, move object, alg string, or array of these.
+    // o.fast: play at fastDuration; o.duration: ms per turn for these moves (overrides both).
     function enqueue(moves, o) {
       var fast = !!(o && o.fast);
+      var dur = (o && o.duration > 0) ? o.duration : 0;
       var list = (typeof moves === 'object' && !Array.isArray(moves)) ? [moves] : moves;
-      Cube.parseAlg(list).forEach(function (m) { queue.push({ move: m, fast: fast }); });
+      Cube.parseAlg(list).forEach(function (m) { queue.push({ move: m, fast: fast, dur: dur }); });
     }
 
     function startNext(now) {
@@ -1085,7 +1087,7 @@
       records.forEach(function (rec) { if (inLayer(rec.pos, item.move)) objs.push(rec.obj); });
       pivot.rotation.set(0, 0, 0);
       objs.forEach(function (o) { pivot.attach(o); });
-      current = { move: item.move, start: now, dur: item.fast ? fastDuration : duration, objs: objs };
+      current = { move: item.move, start: now, dur: item.dur || (item.fast ? fastDuration : duration), objs: objs };
     }
 
     // Leave the pivot at the final angle, move cubies back to cubeRoot and snap them to exact values
@@ -1399,15 +1401,15 @@
       updateSolved();
     };
 
-    // Queue moves (names, objects, alg string or array). o.fast plays them quickly.
-    // o.record === false skips the solve history (default records).
+    // Queue moves (names, objects, alg string or array). o.fast plays them quickly;
+    // o.duration sets ms per turn. o.record === false skips the solve history (default records).
     function applyMoves(moves, o) {
       o = o || {};
       var list = Cube.parseAlg(typeof moves === 'object' && !Array.isArray(moves) ? [moves] : moves);
       if (!list.length) return;
       if (o.record !== false) list.forEach(function (m) { history.push(m); });
       else history.reset(Cube.applyAlg(history.state, list));
-      view.enqueue(list, { fast: !!o.fast });
+      view.enqueue(list, { fast: !!o.fast, duration: o.duration });
       updateSolved();
     }
 
@@ -1566,10 +1568,12 @@
     return {
       list: function () { return list.slice(); },
       add: function (entry) {
-        list.push({
+        var e = {
           time: entry.time, penalty: entry.penalty || 'none',
           scramble: entry.scramble || '', date: entry.date || Date.now()
-        });
+        };
+        if (entry.race) e.race = true;   // Feature 6: solved against the ghost
+        list.push(e);
         save();
         return list.length - 1;
       },
@@ -1596,7 +1600,9 @@
   // States: idle, inspecting, holding, ready, running, stopped.
   // press()/release() are space down/up. tick() advances time-based transitions
   // (holding -> ready, inspection running past 17 s) and should be called every frame.
-  // opts: { now, session, inspection, onChange(state), onResult(entry, index) }.
+  // opts: { now, session, inspection, race, onChange(state), onResult(entry, index) }.
+  // Race mode (Feature 6): the attempt is marked as a race when it starts, its entry gets race: true,
+  // and the cube becoming solved doesn't stop it (the ghost solves the digital cube); space does.
   function createTimer(opts) {
     opts = opts || {};
     var now = opts.now || function () { return root.performance ? root.performance.now() : Date.now(); };
@@ -1604,6 +1610,7 @@
     var t = {
       state: 'idle',
       inspection: !!opts.inspection,
+      race: !!opts.race,
       scramble: '',
       startAt: 0, holdAt: 0, inspectAt: 0,
       penalty: 'none',     // inspection penalty for the solve about to start / running
@@ -1612,6 +1619,7 @@
     };
     var inspectingBeforeHold = false;
     var rest = 'idle'; // state to return to when a hold or inspection is cancelled
+    var raceRun = false; // the current / last attempt is a race
 
     function set(state) {
       if (t.state === state) return;
@@ -1629,6 +1637,7 @@
     function record(time, penalty) {
       t.lastTime = time;
       var entry = { time: time, penalty: penalty, scramble: t.scramble, date: Date.now() };
+      if (raceRun) entry.race = true;
       var index = session.add(entry);
       rest = 'stopped';
       set('stopped');
@@ -1638,6 +1647,7 @@
     t.press = function () {
       if (t.state === 'running') { t.stop('space'); return; }
       if (t.state === 'idle' || t.state === 'stopped') {
+        raceRun = t.race;
         if (t.inspection) {
           t.inspectAt = now();
           inspectingBeforeHold = false;
@@ -1690,7 +1700,7 @@
       record(time, reason === 'escape' ? 'DNF' : t.penalty);
     };
 
-    t.notifySolved = function () { t.stop('solved'); };
+    t.notifySolved = function () { if (!raceRun) t.stop('solved'); };
 
     // Elapsed ms for display (running), or the last result.
     t.elapsed = function () {
@@ -1706,6 +1716,8 @@
     };
     t.isRunning = function () { return t.state === 'running'; };
     t.setInspection = function (on) { t.inspection = !!on; };
+    t.setRace = function (on) { t.race = !!on; };
+    t.isRace = function () { return raceRun; };   // the current (or last) attempt is a race
     t.setScramble = function (s) { t.scramble = s; };
 
     return t;
@@ -1729,7 +1741,11 @@
     '.tm-list li{padding:4px 0;border-top:1px solid #333}',
     '.tm-list .tm-time{display:inline-block;min-width:90px;font-family:ui-monospace,Consolas,monospace}',
     '.tm-list .tm-scr{display:block;color:#888;font-size:11px;font-family:ui-monospace,Consolas,monospace}',
-    '.tm-list button.tm-on{background:#7a2b2b;border-color:#a44}'
+    '.tm-list button.tm-on{background:#7a2b2b;border-color:#a44}',
+    '.tm-list .tm-tag{color:#8ab4f8;font-size:11px;margin-right:6px}',
+    '.tm-root input[type=number]{width:60px;background:#222;color:#ddd;border:1px solid #555;border-radius:4px;padding:1px 4px;font:inherit}',
+    '.tm-note{font-size:12px;color:#aaa}',
+    '.tm-race{font-size:14px;color:#ffd54f;min-height:0}'
   ].join('\n');
 
   function el(tag, cls, text) {
@@ -1754,7 +1770,13 @@
   // hooks.onRunningChange(bool) - called when timing starts (true) and stops (false).
   // hooks.onActiveChange(bool)  - true while inspecting, holding space or running; false when idle/stopped.
   // hooks.storage               - optional storage override (default localStorage).
-  // Returns { timer, session, keyDown(e), keyUp(e), notifySolved(), newScramble(), isRunning() }.
+  // Race mode (Feature 6), all optional:
+  // hooks.raceBlocked()         - message when a race can't start (cube already solved), else null.
+  // hooks.raceArm()             - a race attempt began (inspection or space hold): prepare the ghost.
+  // hooks.raceStart(targetMs)   - the timer started: start the ghost.
+  // hooks.raceCancel()          - the attempt ended before the timer started.
+  // Returns { timer, session, keyDown(e), keyUp(e), notifySolved(), newScramble(), isRunning(),
+  //   ghostFinished(ms), raceMessage(text), setGhostBusy(bool) }.
   function mount(container, hooks) {
     hooks = hooks || {};
     if (!document.getElementById('tm-style')) {
@@ -1780,28 +1802,112 @@
     inspLabel.appendChild(inspBox);
     inspLabel.appendChild(document.createTextNode(' Inspection (15 s)'));
     var newBtn = button('New scramble', function () { newScramble(); });
+    var raceLabel = el('label');
+    var raceBox = el('input');
+    raceBox.type = 'checkbox';
+    raceBox.tabIndex = -1;
+    raceLabel.appendChild(raceBox);
+    raceLabel.appendChild(document.createTextNode(' Race'));
     controls.appendChild(newBtn);
     controls.appendChild(inspLabel);
+    controls.appendChild(raceLabel);
+    // Race settings row: ghost target in seconds, or the session PB.
+    var raceRow = el('div', 'tm-row');
+    var targetIn = el('input');
+    targetIn.type = 'number';
+    targetIn.min = '1';
+    targetIn.step = '0.5';
+    targetIn.tabIndex = -1;
+    var pbLabel = el('label');
+    var pbBox = el('input');
+    pbBox.type = 'checkbox';
+    pbBox.tabIndex = -1;
+    pbLabel.appendChild(pbBox);
+    pbLabel.appendChild(document.createTextNode(' Use my PB'));
+    raceRow.appendChild(document.createTextNode('Ghost target '));
+    raceRow.appendChild(targetIn);
+    raceRow.appendChild(document.createTextNode(' s'));
+    raceRow.appendChild(pbLabel);
+    var raceNote = el('div', 'tm-note');
+    var raceEl = el('div', 'tm-race');
     var statsEl = el('div', 'tm-stats');
     var listEl = el('ul', 'tm-list');
     rootEl.appendChild(scrambleEl);
     rootEl.appendChild(digits);
     rootEl.appendChild(controls);
+    rootEl.appendChild(raceRow);
+    rootEl.appendChild(raceNote);
+    rootEl.appendChild(raceEl);
     rootEl.appendChild(statsEl);
     rootEl.appendChild(listEl);
     container.appendChild(rootEl);
 
+    var Race = root.Race || (typeof module !== 'undefined' && module.exports ? require('./race.js') : null);
+    var raceStore = hooks.storage !== undefined ? hooks.storage : undefined;
+    var raceSet = Race.loadSettings(raceStore);
+    var race = null;          // { user: entry | null, ghost: ms | null, msg } for the current / last race
+    var ghostBusy = false;    // the ghost is still solving the digital cube
+    var prevState = 'idle';
+
     var timer = createTimer({
       session: session,
-      onChange: function () { render(); loop(); },
-      onResult: function () { renderSession(); newScramble(); }
+      race: raceSet.on,
+      onChange: function (state) { onState(prevState, state); prevState = state; render(); loop(); },
+      onResult: function (entry) {
+        if (entry.race && race) { race.user = entry; renderRace(); }
+        renderSession(); newScramble();
+      }
     });
+
+    function isActive(s) { return s !== 'idle' && s !== 'stopped'; }
+    function onState(prev, state) {
+      if (!timer.isRace()) return;
+      if (!isActive(prev) && isActive(state)) {
+        race = { user: null, ghost: null, msg: '' };
+        renderRace();
+        if (hooks.raceArm) hooks.raceArm();
+      }
+      if (state === 'running' && hooks.raceStart) hooks.raceStart(Race.target(raceSet, session.list()).ms);
+      if (isActive(prev) && prev !== 'running' && !isActive(state) && hooks.raceCancel) hooks.raceCancel();
+    }
 
     inspBox.addEventListener('change', function () {
       inspBox.blur();
       timer.setInspection(inspBox.checked);
     });
 
+    raceBox.checked = raceSet.on;
+    pbBox.checked = raceSet.usePB;
+    targetIn.value = String(raceSet.target / 1000);
+    function saveRace() { Race.saveSettings(raceSet, raceStore); renderRaceSettings(); }
+    raceBox.addEventListener('change', function () {
+      raceBox.blur();
+      raceSet.on = !!raceBox.checked;
+      timer.setRace(raceSet.on);
+      if (!raceSet.on) { race = null; renderRace(); }
+      saveRace();
+    });
+    pbBox.addEventListener('change', function () { pbBox.blur(); raceSet.usePB = !!pbBox.checked; saveRace(); });
+    targetIn.addEventListener('change', function () {
+      var v = parseFloat(targetIn.value);
+      if (v > 0) raceSet.target = Math.round(v * 1000);
+      targetIn.value = String(raceSet.target / 1000);
+      targetIn.blur();
+      saveRace();
+    });
+
+    function renderRaceSettings() {
+      raceRow.style.display = raceSet.on ? '' : 'none';
+      raceNote.style.display = raceSet.on ? '' : 'none';
+      var tg = Race.target(raceSet, session.list());
+      raceNote.textContent = tg.note || ('Ghost target: ' + formatTime(tg.ms) + ' s.');
+    }
+    function renderRace() {
+      raceEl.style.display = race ? '' : 'none';
+      if (!race) { raceEl.textContent = ''; return; }
+      raceEl.textContent = race.msg || Race.result(race.user, race.ghost).text;
+      if (race.cap) raceEl.textContent += '  ' + race.cap;
+    }
     function newScramble() {
       if (timer.isRunning()) return;
       var moves = Cube.randomScramble(20, { half: true });
@@ -1829,8 +1935,9 @@
         digits.textContent = formatTime(timer.elapsed());
       }
 
-      newBtn.disabled = timer.isRunning();
-      inspBox.disabled = s !== 'idle' && s !== 'stopped';
+      newBtn.disabled = timer.isRunning() || ghostBusy;
+      inspBox.disabled = (s !== 'idle' && s !== 'stopped') || ghostBusy;
+      raceBox.disabled = pbBox.disabled = targetIn.disabled = inspBox.disabled;
 
       var running = timer.isRunning();
       if (running !== wasRunning) {
@@ -1864,10 +1971,12 @@
         '   ao5: ' + formatTime(st.ao5) + '   ao12: ' + formatTime(st.ao12) + '   mean: ' + formatTime(st.mean) +
         '   (' + list.length + ')';
       listEl.textContent = '';
+      renderRaceSettings();   // the PB may have changed
       for (var i = list.length - 1; i >= 0; i--) {
         (function (i, entry) {
           var li = el('li');
           li.appendChild(el('span', 'tm-time', (i + 1) + '. ' + formatEntry(entry)));
+          if (entry.race) li.appendChild(el('span', 'tm-tag', 'race'));
           var p2 = button('+2', function () { session.togglePlus2(i); renderSession(); render(); });
           var dnf = button('DNF', function () { session.toggleDNF(i); renderSession(); render(); });
           var del = button('delete', function () { session.remove(i); renderSession(); render(); });
@@ -1893,7 +2002,12 @@
         if (document.activeElement && document.activeElement.blur && document.activeElement !== document.body) {
           document.activeElement.blur();
         }
-        if (!e.repeat) timer.press();
+        if (e.repeat) return true;
+        if (raceSet.on && !isActive(timer.state) && hooks.raceBlocked) {
+          var msg = hooks.raceBlocked();
+          if (msg) { race = { user: null, ghost: null, msg: msg }; renderRace(); return true; }
+        }
+        timer.press();
         return true;
       }
       if (e.key === 'Escape' && timer.state !== 'idle' && timer.state !== 'stopped') {
@@ -1915,6 +2029,7 @@
 
     newScramble();
     renderSession();
+    renderRace();
     render();
 
     return {
@@ -1924,7 +2039,13 @@
       keyUp: keyUp,
       notifySolved: function () { timer.notifySolved(); },
       newScramble: newScramble,
-      isRunning: function () { return timer.isRunning(); }
+      isRunning: function () { return timer.isRunning(); },
+      // The ghost finished the digital cube in ms (from the timer's start).
+      ghostFinished: function (ms) { if (race) { race.ghost = ms; renderRace(); } },
+      // A note on the current race, e.g. the target is faster than the animation allows.
+      raceMessage: function (text) { if (race) { race.cap = text; renderRace(); } },
+      setGhostBusy: function (on) { ghostBusy = !!on; render(); },
+      raceSettings: function () { return { on: raceSet.on, target: raceSet.target, usePB: raceSet.usePB }; }
     };
   }
 
@@ -1939,6 +2060,173 @@
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Timer;
   else root.Timer = Timer;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
+// race.js - Feature 6 logic, no DOM: the ghost's human-like pacing schedule, the PB lookup,
+// race settings storage and the result line.
+// Browser: defines window.Race (needs window.Cube and window.Timer loaded first).
+// Node: require('./src/race.js') returns the same object.
+(function (root) {
+  'use strict';
+
+  var isNode = typeof module !== 'undefined' && module.exports;
+  var Cube = isNode ? require('./core.js') : root.Cube;
+  var Timer = isNode ? require('./timer.js') : root.Timer;
+
+  var SETTINGS_KEY = 'rubiks-race-settings';
+  var DEFAULT_TARGET = 20000;
+
+  // Nominal pace (ms) of a ~20 s CFOP solver, by solver stage (1 orientation .. 8 AUF).
+  // PAUSE: recognition / lookahead before the stage. TURN: one quarter turn.
+  var PAUSE = { 1: 300, 2: 800, 3: 900, 4: 700, 5: 600, 6: 700, 7: 600, 8: 350 };
+  var TURN = { 1: 250, 2: 210, 3: 240, 4: 110, 5: 110, 6: 110, 7: 110, 8: 180 };
+  var DOUBLE = 1.6;          // a double turn takes this much longer than a quarter turn
+  var ROTATION = 1.5;        // a whole-cube rotation (x, y, z)
+  var TURN_JITTER = 0.2;     // +-20% per move
+  var PAUSE_JITTER = 0.3;    // +-30% per pause
+  var MIN_QUARTER = 60;      // animation limit per quarter turn (ms)
+  var MIN_DOUBLE = 90;       // per double turn or rotation
+  var ANIM_SHARE = 0.85;     // share of a move's slot spent animating (the rest is the gap)
+  var MAX_ANIM = 250;
+
+  function kindOf(move) {
+    var m = Cube.parseMove(move);
+    if ('xyz'.indexOf(m.base) >= 0) return 'rotation';
+    return Math.abs(m.turns) === 2 ? 'double' : 'quarter';
+  }
+
+  // schedule(steps, targetMs, opts) -> { moves, pauses, total, target, capped, minTotal }
+  // steps: Solver.solve(state).steps ([{ stage, moves }]). opts.random: RNG in [0, 1) (default Math.random).
+  // moves: [{ move, stage, kind, at, dur, anim }]: the move starts at `at` ms after the start and
+  //   animates for `anim` ms; `dur` is its whole slot (animation + gap before the next move).
+  // pauses: [{ stage, at, dur }], one before each step.
+  // total: when the last turn finishes. It equals target unless the target is below minTotal
+  //   (every turn at the animation limit, no pauses), in which case capped is true and total = minTotal.
+  function schedule(steps, targetMs, opts) {
+    var rnd = (opts && opts.random) || Math.random;
+    function jitter(j) { return 1 + j * (2 * rnd() - 1); }
+    // Unscaled weights, drawn once so the scaling below doesn't change the rhythm.
+    var items = [];
+    steps.forEach(function (st) {
+      items.push({ pause: true, stage: st.stage, w: PAUSE[st.stage] * jitter(PAUSE_JITTER) });
+      st.moves.forEach(function (mv) {
+        var kind = kindOf(mv);
+        var w = TURN[st.stage] * (kind === 'double' ? DOUBLE : kind === 'rotation' ? ROTATION : 1) * jitter(TURN_JITTER);
+        items.push({ pause: false, stage: st.stage, move: mv, kind: kind, w: w,
+          min: kind === 'quarter' ? MIN_QUARTER : MIN_DOUBLE });
+      });
+    });
+    var last = -1;
+    items.forEach(function (it, i) { if (!it.pause) last = i; });
+
+    function build(k) {
+      var t = 0, moves = [], pauses = [], end = 0;
+      items.forEach(function (it, i) {
+        if (it.pause) { var p = k * it.w; pauses.push({ stage: it.stage, at: t, dur: p }); t += p; return; }
+        var dur = Math.max(it.min, k * it.w);
+        var anim = Math.min(MAX_ANIM, ANIM_SHARE * dur);
+        moves.push({ move: it.move, stage: it.stage, kind: it.kind, at: t, dur: dur, anim: anim });
+        if (i === last) end = t + anim;
+        t += dur;
+      });
+      return { moves: moves, pauses: pauses, total: end };
+    }
+
+    var minPlan = build(0);
+    if (last < 0 || targetMs <= minPlan.total) {
+      minPlan.target = targetMs; minPlan.capped = last >= 0 && targetMs < minPlan.total; minPlan.minTotal = minPlan.total;
+      return minPlan;
+    }
+    // total(k) is continuous and increasing: bisect for the scale that lands on the target.
+    var lo = 0, hi = 1;
+    while (build(hi).total < targetMs) hi *= 2;
+    for (var n = 0; n < 60; n++) {
+      var mid = (lo + hi) / 2;
+      if (build(mid).total < targetMs) lo = mid; else hi = mid;
+    }
+    var plan = build(hi);
+    plan.target = targetMs; plan.capped = false; plan.minTotal = minPlan.total;
+    return plan;
+  }
+
+  // Best non-DNF single (ms, +2 included) of a session list, or null.
+  function bestSingle(list) {
+    var best = null;
+    (list || []).forEach(function (e) {
+      var t = Timer.effective(e);
+      if (t !== Infinity && (best === null || t < best)) best = t;
+    });
+    return best;
+  }
+
+  // The ghost's target: { ms, fromPB, note }. settings: { target, usePB }.
+  function target(settings, list) {
+    var set = settings.target > 0 ? settings.target : DEFAULT_TARGET;
+    if (!settings.usePB) return { ms: set, fromPB: false, note: '' };
+    var pb = bestSingle(list);
+    if (pb === null) return { ms: set, fromPB: false, note: 'No PB yet: using the set time (' + Timer.formatTime(set) + ' s).' };
+    return { ms: pb, fromPB: true, note: 'Ghost target: your PB, ' + Timer.formatTime(pb) + ' s.' };
+  }
+
+  function defaultStorage() {
+    try { return root.localStorage || null; } catch (e) { return null; }
+  }
+
+  function loadSettings(storage) {
+    if (storage === undefined) storage = defaultStorage();
+    var out = { on: false, target: DEFAULT_TARGET, usePB: false };
+    try {
+      var raw = storage && storage.getItem(SETTINGS_KEY);
+      var s = raw ? JSON.parse(raw) : null;
+      if (s && typeof s === 'object') {
+        out.on = !!s.on;
+        out.usePB = !!s.usePB;
+        if (typeof s.target === 'number' && s.target > 0) out.target = s.target;
+      }
+    } catch (e) { /* defaults */ }
+    return out;
+  }
+
+  function saveSettings(settings, storage) {
+    if (storage === undefined) storage = defaultStorage();
+    try {
+      if (storage) storage.setItem(SETTINGS_KEY, JSON.stringify({ on: !!settings.on, target: settings.target, usePB: !!settings.usePB }));
+    } catch (e) { /* ignore */ }
+  }
+
+  // Result of a race: user is the saved entry (or null while running), ghost the ghost's ms (or null
+  // while it is still solving). -> { winner: 'you' | 'ghost' | 'tie' | null, margin: ms | null, text }
+  function result(user, ghost) {
+    var g = ghost === null || ghost === undefined ? null : ghost;
+    if (!user) {
+      return { winner: null, margin: null, text: g === null ? 'Racing the ghost…' : 'Ghost finished in ' + Timer.formatTime(g) + '. Keep going!' };
+    }
+    var u = Timer.effective(user);
+    var you = 'You ' + Timer.formatEntry(user);
+    if (g === null) {
+      if (u === Infinity) return { winner: 'ghost', margin: null, text: you + '  ·  Ghost still solving: ghost wins.' };
+      return { winner: 'you', margin: null, text: you + '  ·  Ghost still solving: you won!' };
+    }
+    var both = you + '  ·  Ghost ' + Timer.formatTime(g) + '  ·  ';
+    if (u === Infinity) return { winner: 'ghost', margin: null, text: both + 'Ghost wins.' };
+    // Compare the times as shown (truncated to 0.01 s), so the margin matches the two numbers.
+    var d = Math.abs(Math.floor(u / 10) - Math.floor(g / 10)) * 10;
+    if (d === 0) return { winner: 'tie', margin: 0, text: both + 'Tie!' };
+    var w = u < g ? 'you' : 'ghost';
+    return { winner: w, margin: d, text: both + (w === 'you' ? 'You won by ' : 'Ghost won by ') + Timer.formatTime(d) + ' s.' };
+  }
+
+  var Race = {
+    SETTINGS_KEY: SETTINGS_KEY, DEFAULT_TARGET: DEFAULT_TARGET,
+    MIN_QUARTER: MIN_QUARTER, MIN_DOUBLE: MIN_DOUBLE,
+    schedule: schedule, bestSingle: bestSingle, target: target,
+    loadSettings: loadSettings, saveSettings: saveSettings, result: result
+  };
+
+  if (isNode) module.exports = Race;
+  else root.Race = Race;
 })(typeof window !== 'undefined' ? window : this);
 
 </script>
@@ -3430,7 +3718,7 @@
 </script>
 <script>
 // app.js - wires the page together: baseline cube, CFOP hint panel (solver in a Web Worker),
-// timer, and the Cube | Algorithms | Scan tabs. Browser only; loaded last.
+// timer (with the Feature 6 race ghost), and the Cube | Algorithms | Scan tabs. Browser only; loaded last.
 (function () {
   'use strict';
 
@@ -3457,6 +3745,9 @@
 
   var tab = 'cube';
   var timing = false;   // inspection, space hold or timed solve in progress
+  // Race ghost (Feature 6): the digital cube solving itself while the user solves a real one.
+  var ghost = { id: 0, solution: null, waiting: false, active: false, plan: null, idx: 0, t0: 0, target: 0 };
+  function ghostBusy() { return ghost.waiting || ghost.active; }
 
   // ---------------------------------------------------------------------------
   // Solver worker. Built from the inlined core + solver source so it works from file://.
@@ -3524,7 +3815,7 @@
   var stale = true;       // hint no longer matches the cube
   var requestId = 0;
 
-  function hintsVisible() { return hintsOn && !timing && tab === 'cube'; }
+  function hintsVisible() { return hintsOn && !timing && !ghostBusy() && tab === 'cube'; }
 
   function refreshHints() {
     hintsBtn.textContent = 'Hints: ' + (hintsOn ? 'on' : 'off');
@@ -3646,6 +3937,16 @@
     pendingScramble = null;
   }
 
+  // Show the solved cube for a moment, then apply the next timer scramble.
+  function delayScramble(moves) {
+    cancelPendingScramble();
+    pendingScramble = moves;
+    scrambleTimer = setTimeout(function () {
+      scrambleTimer = 0;
+      if (timerIdle()) applyTimerScramble(moves);
+    }, 700);
+  }
+
   function applyTimerScramble(moves) {
     if (!mounted) return;   // the first scramble is applied right after mount
     cancelPendingScramble();
@@ -3657,14 +3958,11 @@
 
   var ui = Timer.mount($('timer'), {
     applyScramble: function (moves) {
+      // The ghost is still solving: scramble once it has finished.
+      if (mounted && ghostBusy()) { cancelPendingScramble(); pendingScramble = moves; return; }
       // After a solve, leave the solved cube visible for a moment before scrambling.
       if (mounted && ui && ui.timer.state === 'stopped' && Cube.isSolved(app.getState())) {
-        cancelPendingScramble();
-        pendingScramble = moves;
-        scrambleTimer = setTimeout(function () {
-          scrambleTimer = 0;
-          if (timerIdle()) applyTimerScramble(moves);
-        }, 700);
+        delayScramble(moves);
         return;
       }
       applyTimerScramble(moves);
@@ -3672,12 +3970,75 @@
     // Inspection, the space hold and the solve itself all count as timing.
     onActiveChange: function (active) {
       timing = active;
-      app.setButtonsEnabled(!active);
-      tabAlgs.disabled = active;
-      tabScan.disabled = active;
-      refreshHints();
-    }
+      updateBusy();
+    },
+    raceBlocked: function () {
+      return Cube.isSolved(app.getQueuedState())
+        ? 'The cube is already solved: scramble it (or load one from the Scan tab) to race.' : null;
+    },
+    // Work out the ghost's solution during the hold / inspection, so it is ready on release.
+    raceArm: function () {
+      var id = ++ghost.id, state = app.getQueuedState();
+      ghost.solution = null;
+      solver.solve(state, function (err, res) {
+        if (id !== ghost.id) return;
+        if (err || !res) { ghost.waiting = false; ui.raceMessage('The ghost could not solve this cube.'); updateBusy(); return; }
+        ghost.solution = res;
+        if (ghost.waiting) startGhost();
+      });
+    },
+    raceStart: function (targetMs) {
+      ghost.t0 = ui.timer.startAt;
+      ghost.target = targetMs;
+      ghost.waiting = true;
+      if (ghost.solution) startGhost();
+      updateBusy();
+    },
+    raceCancel: function () { ghost.id++; ghost.waiting = false; updateBusy(); }
   });
+
+  // Buttons, tabs, hints and keys while timing or racing. During a race the cube keys are off too,
+  // until the ghost has finished.
+  function updateBusy() {
+    var racing = (timing && ui.timer.isRace()) || ghostBusy();
+    var busy = timing || racing;
+    app.setButtonsEnabled(!busy);
+    tabAlgs.disabled = busy;
+    tabScan.disabled = busy;
+    hintsBtn.disabled = busy;
+    app.setKeysEnabled(tab === 'cube' && !racing);
+    ui.setGhostBusy(ghostBusy());
+    refreshHints();
+  }
+
+  // Play the solution on the human-like schedule, each move at its time from the timer's start.
+  function startGhost() {
+    ghost.waiting = false;
+    ghost.active = true;
+    ghost.plan = Race.schedule(ghost.solution.steps, ghost.target);
+    ghost.idx = 0;
+    if (ghost.plan.capped) {
+      ui.raceMessage('(' + Timer.formatTime(ghost.target) + ' s is faster than the animation allows for this solve: the ghost needs ' +
+        Timer.formatTime(ghost.plan.total) + ' s.)');
+    }
+    ghostTick();
+  }
+  function ghostTick() {
+    if (!ghost.active) return;
+    var t = performance.now() - ghost.t0, mv = ghost.plan.moves;
+    while (ghost.idx < mv.length && t >= mv[ghost.idx].at) {
+      app.applyMoves(mv[ghost.idx].move, { duration: mv[ghost.idx].anim });
+      ghost.idx++;
+    }
+    if (ghost.idx < mv.length) requestAnimationFrame(ghostTick);
+  }
+  function ghostMoveDone() {
+    if (!ghost.active || ghost.idx < ghost.plan.moves.length || !app.isIdle()) return;
+    ghost.active = false;
+    ui.ghostFinished(performance.now() - ghost.t0);
+    updateBusy();
+    if (pendingScramble && timerIdle()) delayScramble(pendingScramble);
+  }
   mounted = true;
   applyTimerScramble(ui.timer.scramble);   // the cube matches the scramble shown on load
 
@@ -3687,7 +4048,8 @@
   app.hooks.onMove = function (move, state) {
     if (app.isIdle()) scrambling = false;
     trackMove(move);
-    if (Cube.isSolved(state)) ui.notifySolved();
+    if (Cube.isSolved(state)) ui.notifySolved();   // ignored by the timer during a race
+    ghostMoveDone();
     if (app.isIdle()) refreshHints();
   };
 
@@ -3709,7 +4071,7 @@
 
   function setTab(name) {
     var t = ui.timer.state;
-    if (name !== 'cube' && t !== 'idle' && t !== 'stopped') return;  // finish the timed solve first
+    if (name !== 'cube' && ((t !== 'idle' && t !== 'stopped') || ghostBusy())) return;  // finish the timed solve / race first
     tab = name;
     tabCube.classList.toggle('active', name === 'cube');
     tabAlgs.classList.toggle('active', name === 'algs');
@@ -3718,9 +4080,9 @@
     scanEl.style.display = name === 'scan' ? '' : 'none';
     if (name === 'scan') scanTab.show(); else scanTab.hide();
     $('timer').style.display = name === 'cube' ? '' : 'none';
-    app.setKeysEnabled(name === 'cube');
-    refreshHints();
+    updateBusy();   // keys only on the Cube tab, and not while racing
   }
+  updateBusy();
   tabCube.addEventListener('click', function () { setTab('cube'); });
   tabAlgs.addEventListener('click', function () { setTab('algs'); });
   tabScan.addEventListener('click', function () { setTab('scan'); });
@@ -3733,6 +4095,7 @@
   window.addEventListener('keydown', function (e) {
     if (isSpace(e)) {
       e.preventDefault();
+      if (tab === 'cube' && timerIdle() && ghostBusy()) return;   // the ghost is still solving
       if (tab === 'cube' && timerIdle() && (scrambleTimer || scrambling)) {
         // Don't start inspection or a hold until the next scramble is on the cube.
         if (scrambleTimer) applyTimerScramble(pendingScramble);
@@ -3745,8 +4108,10 @@
     if (tab !== 'cube') return;
     if (e.key === 'Escape') { ui.keyDown(e); return; }
     if (e.repeat || e.ctrlKey || e.metaKey) return;
+    if (e.target && e.target.tagName === 'INPUT') return;     // typing a race target
+    if ((timing && ui.timer.isRace()) || ghostBusy()) return;  // racing: the cube is busy
     var key = Baseline.eventKey(e);
-    if (!e.altKey && (key === 'KeyH' || key === 'h' || key === 'H')) { e.preventDefault(); toggleHints(); return; }
+    if (!e.altKey && (key === 'KeyH' || key === 'h' || key === 'H')) { e.preventDefault(); if (!hintsBtn.disabled) toggleHints(); return; }
     // A cube key queues a move: the layer highlight would be stale while it animates,
     // and a delayed post-solve scramble must not overwrite it.
     if (Baseline.keyToMove(key, e.shiftKey, e.altKey)) { app.view.highlightLayer(null); cancelPendingScramble(); }

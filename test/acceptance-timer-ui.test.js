@@ -210,5 +210,74 @@ ui2.keyDown(evt()); advance(320); ui2.keyUp(evt()); advance(3000); ui2.notifySol
 var last = ui2.session.list()[ui2.session.list().length - 1];
 check('inspection over 15 s = +2', last.penalty === '+2', JSON.stringify(last));
 
+// ---- Feature 6: race mode through the panel ----
+(function () {
+  var st = fakeStorage(), c3 = new Elem('div'), calls = [], blocked = 'The cube is already solved: scramble it first.';
+  var cubeSolved = true;
+  var ui3 = T.mount(c3, {
+    storage: st, applyScramble: function () {},
+    raceBlocked: function () { return cubeSolved ? blocked : null; },
+    raceArm: function () { calls.push('arm'); },
+    raceStart: function (ms) { calls.push('start:' + ms); },
+    raceCancel: function () { calls.push('cancel'); }
+  });
+  function inputs() { return find(c3, function (e) { return e.tagName === 'INPUT'; }); }
+  function raceText() { return find(c3, function (e) { return e.className === 'tm-race'; })[0].textContent; }
+  function noteText() { return find(c3, function (e) { return e.className === 'tm-note'; })[0].textContent; }
+  var raceBox = inputs()[1], targetIn = inputs()[2], pbBox = inputs()[3];
+  check('race: off by default', raceBox.checked === false && ui3.timer.race === false);
+  raceBox.checked = true; raceBox.fire('change');
+  check('race: checkbox turns race mode on', ui3.timer.race === true);
+  targetIn.value = '8'; targetIn.fire('change');
+  check('race: target remembered in storage', JSON.parse(st.data['rubiks-race-settings']).target === 8000 && JSON.parse(st.data['rubiks-race-settings']).on === true);
+  check('race: note shows the set target', /8\.00/.test(noteText()), noteText());
+
+  ui3.keyDown(evt()); ui3.keyUp(evt());
+  check('race: solved cube does not start', ui3.timer.state === 'idle' && calls.length === 0);
+  check('race: solved cube shows a message', raceText() === blocked, raceText());
+
+  cubeSolved = false;
+  ui3.keyDown(evt()); advance(100); ui3.keyUp(evt());
+  check('race: early release cancels the armed ghost', calls.join() === 'arm,cancel', calls.join());
+  calls = [];
+  ui3.keyDown(evt()); advance(320); ui3.keyUp(evt());
+  check('race: release on green starts the ghost with the target', calls.join() === 'arm,start:8000', calls.join());
+  advance(7000);
+  ui3.notifySolved();   // the ghost solved the digital cube
+  check('race: digital cube solved does not stop the timer', ui3.timer.state === 'running');
+  ui3.ghostFinished(7990);
+  check('race: ghost time shown while the timer runs', /Ghost finished in 7\.99/.test(raceText()) && ui3.timer.isRunning(), raceText());
+  advance(1500);
+  ui3.keyDown(evt()); ui3.keyUp(evt());
+  var e3 = ui3.session.list()[0];
+  check('race: space stops the timer', ui3.timer.state === 'stopped' && ui3.session.list().length === 1);
+  check('race: entry marked as a race', e3.race === true && e3.time === 8500 && e3.penalty === 'none', JSON.stringify(e3));
+  check('race: result shows both times and the winner', /You 8\.50.*Ghost 7\.99.*Ghost won by 0\.51/.test(raceText()), raceText());
+  check('race: ghost time not in the stats', /best: 8\.50/.test(find(c3, function (e) { return e.className === 'tm-stats'; })[0].textContent));
+  var row = find(c3, function (e) { return e.className === 'tm-list'; })[0].children[0];
+  check('race: list row tagged race', row.children.some(function (c) { return c.className === 'tm-tag' && c.textContent === 'race'; }));
+
+  // Use my PB: the 8.50 above.
+  pbBox.checked = true; pbBox.fire('change');
+  check('race: PB note', /your PB, 8\.50/.test(noteText()), noteText());
+  calls = [];
+  ui3.keyDown(evt()); advance(320); ui3.keyUp(evt()); advance(2000);
+  check('race: PB is the target', calls.join() === 'arm,start:8500', calls.join());
+  var x = esc(); ui3.keyDown(x);
+  check('race: escape stops as DNF', ui3.session.list()[1].penalty === 'DNF' && ui3.session.list()[1].race === true);
+  check('race: DNF with the ghost still solving -> ghost wins', /DNF.*ghost wins/.test(raceText()), raceText());
+
+  // Reload keeps the race settings and the race mark.
+  var ui4 = T.mount(new Elem('div'), { storage: st, applyScramble: function () {} });
+  check('race: settings survive reload', ui4.timer.race === true && ui4.raceSettings().usePB === true && ui4.raceSettings().target === 8000);
+  check('race: race mark survives reload', ui4.session.list()[0].race === true && ui4.session.list()[1].race === true);
+
+  // Race off: solving stops the timer again, entry has no race mark.
+  raceBox.checked = false; raceBox.fire('change');
+  ui3.keyDown(evt()); advance(320); ui3.keyUp(evt()); advance(3000); ui3.notifySolved();
+  var e5 = ui3.session.list()[2];
+  check('race off: solved stops the timer, no race mark', ui3.timer.state === 'stopped' && e5 && !e5.race, JSON.stringify(e5));
+})();
+
 console.log('acceptance-timer-ui: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

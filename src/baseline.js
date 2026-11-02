@@ -75,15 +75,15 @@
       updateSolved();
     };
 
-    // Queue moves (names, objects, alg string or array). o.fast plays them quickly.
-    // o.record === false skips the solve history (default records).
+    // Queue moves (names, objects, alg string or array). o.fast plays them quickly;
+    // o.duration sets ms per turn. o.record === false skips the solve history (default records).
     function applyMoves(moves, o) {
       o = o || {};
       var list = Cube.parseAlg(typeof moves === 'object' && !Array.isArray(moves) ? [moves] : moves);
       if (!list.length) return;
       if (o.record !== false) list.forEach(function (m) { history.push(m); });
       else history.reset(Cube.applyAlg(history.state, list));
-      view.enqueue(list, { fast: !!o.fast });
+      view.enqueue(list, { fast: !!o.fast, duration: o.duration });
       updateSolved();
     }
 

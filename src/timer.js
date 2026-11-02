@@ -94,10 +94,12 @@
     return {
       list: function () { return list.slice(); },
       add: function (entry) {
-        list.push({
+        var e = {
           time: entry.time, penalty: entry.penalty || 'none',
           scramble: entry.scramble || '', date: entry.date || Date.now()
-        });
+        };
+        if (entry.race) e.race = true;   // Feature 6: solved against the ghost
+        list.push(e);
         save();
         return list.length - 1;
       },
@@ -124,7 +126,9 @@
   // States: idle, inspecting, holding, ready, running, stopped.
   // press()/release() are space down/up. tick() advances time-based transitions
   // (holding -> ready, inspection running past 17 s) and should be called every frame.
-  // opts: { now, session, inspection, onChange(state), onResult(entry, index) }.
+  // opts: { now, session, inspection, race, onChange(state), onResult(entry, index) }.
+  // Race mode (Feature 6): the attempt is marked as a race when it starts, its entry gets race: true,
+  // and the cube becoming solved doesn't stop it (the ghost solves the digital cube); space does.
   function createTimer(opts) {
     opts = opts || {};
     var now = opts.now || function () { return root.performance ? root.performance.now() : Date.now(); };
@@ -132,6 +136,7 @@
     var t = {
       state: 'idle',
       inspection: !!opts.inspection,
+      race: !!opts.race,
       scramble: '',
       startAt: 0, holdAt: 0, inspectAt: 0,
       penalty: 'none',     // inspection penalty for the solve about to start / running
@@ -140,6 +145,7 @@
     };
     var inspectingBeforeHold = false;
     var rest = 'idle'; // state to return to when a hold or inspection is cancelled
+    var raceRun = false; // the current / last attempt is a race
 
     function set(state) {
       if (t.state === state) return;
@@ -157,6 +163,7 @@
     function record(time, penalty) {
       t.lastTime = time;
       var entry = { time: time, penalty: penalty, scramble: t.scramble, date: Date.now() };
+      if (raceRun) entry.race = true;
       var index = session.add(entry);
       rest = 'stopped';
       set('stopped');
@@ -166,6 +173,7 @@
     t.press = function () {
       if (t.state === 'running') { t.stop('space'); return; }
       if (t.state === 'idle' || t.state === 'stopped') {
+        raceRun = t.race;
         if (t.inspection) {
           t.inspectAt = now();
           inspectingBeforeHold = false;
@@ -218,7 +226,7 @@
       record(time, reason === 'escape' ? 'DNF' : t.penalty);
     };
 
-    t.notifySolved = function () { t.stop('solved'); };
+    t.notifySolved = function () { if (!raceRun) t.stop('solved'); };
 
     // Elapsed ms for display (running), or the last result.
     t.elapsed = function () {
@@ -234,6 +242,8 @@
     };
     t.isRunning = function () { return t.state === 'running'; };
     t.setInspection = function (on) { t.inspection = !!on; };
+    t.setRace = function (on) { t.race = !!on; };
+    t.isRace = function () { return raceRun; };   // the current (or last) attempt is a race
     t.setScramble = function (s) { t.scramble = s; };
 
     return t;
@@ -257,7 +267,11 @@
     '.tm-list li{padding:4px 0;border-top:1px solid #333}',
     '.tm-list .tm-time{display:inline-block;min-width:90px;font-family:ui-monospace,Consolas,monospace}',
     '.tm-list .tm-scr{display:block;color:#888;font-size:11px;font-family:ui-monospace,Consolas,monospace}',
-    '.tm-list button.tm-on{background:#7a2b2b;border-color:#a44}'
+    '.tm-list button.tm-on{background:#7a2b2b;border-color:#a44}',
+    '.tm-list .tm-tag{color:#8ab4f8;font-size:11px;margin-right:6px}',
+    '.tm-root input[type=number]{width:60px;background:#222;color:#ddd;border:1px solid #555;border-radius:4px;padding:1px 4px;font:inherit}',
+    '.tm-note{font-size:12px;color:#aaa}',
+    '.tm-race{font-size:14px;color:#ffd54f;min-height:0}'
   ].join('\n');
 
   function el(tag, cls, text) {
@@ -282,7 +296,13 @@
   // hooks.onRunningChange(bool) - called when timing starts (true) and stops (false).
   // hooks.onActiveChange(bool)  - true while inspecting, holding space or running; false when idle/stopped.
   // hooks.storage               - optional storage override (default localStorage).
-  // Returns { timer, session, keyDown(e), keyUp(e), notifySolved(), newScramble(), isRunning() }.
+  // Race mode (Feature 6), all optional:
+  // hooks.raceBlocked()         - message when a race can't start (cube already solved), else null.
+  // hooks.raceArm()             - a race attempt began (inspection or space hold): prepare the ghost.
+  // hooks.raceStart(targetMs)   - the timer started: start the ghost.
+  // hooks.raceCancel()          - the attempt ended before the timer started.
+  // Returns { timer, session, keyDown(e), keyUp(e), notifySolved(), newScramble(), isRunning(),
+  //   ghostFinished(ms), raceMessage(text), setGhostBusy(bool) }.
   function mount(container, hooks) {
     hooks = hooks || {};
     if (!document.getElementById('tm-style')) {
@@ -308,28 +328,112 @@
     inspLabel.appendChild(inspBox);
     inspLabel.appendChild(document.createTextNode(' Inspection (15 s)'));
     var newBtn = button('New scramble', function () { newScramble(); });
+    var raceLabel = el('label');
+    var raceBox = el('input');
+    raceBox.type = 'checkbox';
+    raceBox.tabIndex = -1;
+    raceLabel.appendChild(raceBox);
+    raceLabel.appendChild(document.createTextNode(' Race'));
     controls.appendChild(newBtn);
     controls.appendChild(inspLabel);
+    controls.appendChild(raceLabel);
+    // Race settings row: ghost target in seconds, or the session PB.
+    var raceRow = el('div', 'tm-row');
+    var targetIn = el('input');
+    targetIn.type = 'number';
+    targetIn.min = '1';
+    targetIn.step = '0.5';
+    targetIn.tabIndex = -1;
+    var pbLabel = el('label');
+    var pbBox = el('input');
+    pbBox.type = 'checkbox';
+    pbBox.tabIndex = -1;
+    pbLabel.appendChild(pbBox);
+    pbLabel.appendChild(document.createTextNode(' Use my PB'));
+    raceRow.appendChild(document.createTextNode('Ghost target '));
+    raceRow.appendChild(targetIn);
+    raceRow.appendChild(document.createTextNode(' s'));
+    raceRow.appendChild(pbLabel);
+    var raceNote = el('div', 'tm-note');
+    var raceEl = el('div', 'tm-race');
     var statsEl = el('div', 'tm-stats');
     var listEl = el('ul', 'tm-list');
     rootEl.appendChild(scrambleEl);
     rootEl.appendChild(digits);
     rootEl.appendChild(controls);
+    rootEl.appendChild(raceRow);
+    rootEl.appendChild(raceNote);
+    rootEl.appendChild(raceEl);
     rootEl.appendChild(statsEl);
     rootEl.appendChild(listEl);
     container.appendChild(rootEl);
 
+    var Race = root.Race || (typeof module !== 'undefined' && module.exports ? require('./race.js') : null);
+    var raceStore = hooks.storage !== undefined ? hooks.storage : undefined;
+    var raceSet = Race.loadSettings(raceStore);
+    var race = null;          // { user: entry | null, ghost: ms | null, msg } for the current / last race
+    var ghostBusy = false;    // the ghost is still solving the digital cube
+    var prevState = 'idle';
+
     var timer = createTimer({
       session: session,
-      onChange: function () { render(); loop(); },
-      onResult: function () { renderSession(); newScramble(); }
+      race: raceSet.on,
+      onChange: function (state) { onState(prevState, state); prevState = state; render(); loop(); },
+      onResult: function (entry) {
+        if (entry.race && race) { race.user = entry; renderRace(); }
+        renderSession(); newScramble();
+      }
     });
+
+    function isActive(s) { return s !== 'idle' && s !== 'stopped'; }
+    function onState(prev, state) {
+      if (!timer.isRace()) return;
+      if (!isActive(prev) && isActive(state)) {
+        race = { user: null, ghost: null, msg: '' };
+        renderRace();
+        if (hooks.raceArm) hooks.raceArm();
+      }
+      if (state === 'running' && hooks.raceStart) hooks.raceStart(Race.target(raceSet, session.list()).ms);
+      if (isActive(prev) && prev !== 'running' && !isActive(state) && hooks.raceCancel) hooks.raceCancel();
+    }
 
     inspBox.addEventListener('change', function () {
       inspBox.blur();
       timer.setInspection(inspBox.checked);
     });
 
+    raceBox.checked = raceSet.on;
+    pbBox.checked = raceSet.usePB;
+    targetIn.value = String(raceSet.target / 1000);
+    function saveRace() { Race.saveSettings(raceSet, raceStore); renderRaceSettings(); }
+    raceBox.addEventListener('change', function () {
+      raceBox.blur();
+      raceSet.on = !!raceBox.checked;
+      timer.setRace(raceSet.on);
+      if (!raceSet.on) { race = null; renderRace(); }
+      saveRace();
+    });
+    pbBox.addEventListener('change', function () { pbBox.blur(); raceSet.usePB = !!pbBox.checked; saveRace(); });
+    targetIn.addEventListener('change', function () {
+      var v = parseFloat(targetIn.value);
+      if (v > 0) raceSet.target = Math.round(v * 1000);
+      targetIn.value = String(raceSet.target / 1000);
+      targetIn.blur();
+      saveRace();
+    });
+
+    function renderRaceSettings() {
+      raceRow.style.display = raceSet.on ? '' : 'none';
+      raceNote.style.display = raceSet.on ? '' : 'none';
+      var tg = Race.target(raceSet, session.list());
+      raceNote.textContent = tg.note || ('Ghost target: ' + formatTime(tg.ms) + ' s.');
+    }
+    function renderRace() {
+      raceEl.style.display = race ? '' : 'none';
+      if (!race) { raceEl.textContent = ''; return; }
+      raceEl.textContent = race.msg || Race.result(race.user, race.ghost).text;
+      if (race.cap) raceEl.textContent += '  ' + race.cap;
+    }
     function newScramble() {
       if (timer.isRunning()) return;
       var moves = Cube.randomScramble(20, { half: true });
@@ -357,8 +461,9 @@
         digits.textContent = formatTime(timer.elapsed());
       }
 
-      newBtn.disabled = timer.isRunning();
-      inspBox.disabled = s !== 'idle' && s !== 'stopped';
+      newBtn.disabled = timer.isRunning() || ghostBusy;
+      inspBox.disabled = (s !== 'idle' && s !== 'stopped') || ghostBusy;
+      raceBox.disabled = pbBox.disabled = targetIn.disabled = inspBox.disabled;
 
       var running = timer.isRunning();
       if (running !== wasRunning) {
@@ -392,10 +497,12 @@
         '   ao5: ' + formatTime(st.ao5) + '   ao12: ' + formatTime(st.ao12) + '   mean: ' + formatTime(st.mean) +
         '   (' + list.length + ')';
       listEl.textContent = '';
+      renderRaceSettings();   // the PB may have changed
       for (var i = list.length - 1; i >= 0; i--) {
         (function (i, entry) {
           var li = el('li');
           li.appendChild(el('span', 'tm-time', (i + 1) + '. ' + formatEntry(entry)));
+          if (entry.race) li.appendChild(el('span', 'tm-tag', 'race'));
           var p2 = button('+2', function () { session.togglePlus2(i); renderSession(); render(); });
           var dnf = button('DNF', function () { session.toggleDNF(i); renderSession(); render(); });
           var del = button('delete', function () { session.remove(i); renderSession(); render(); });
@@ -421,7 +528,12 @@
         if (document.activeElement && document.activeElement.blur && document.activeElement !== document.body) {
           document.activeElement.blur();
         }
-        if (!e.repeat) timer.press();
+        if (e.repeat) return true;
+        if (raceSet.on && !isActive(timer.state) && hooks.raceBlocked) {
+          var msg = hooks.raceBlocked();
+          if (msg) { race = { user: null, ghost: null, msg: msg }; renderRace(); return true; }
+        }
+        timer.press();
         return true;
       }
       if (e.key === 'Escape' && timer.state !== 'idle' && timer.state !== 'stopped') {
@@ -443,6 +555,7 @@
 
     newScramble();
     renderSession();
+    renderRace();
     render();
 
     return {
@@ -452,7 +565,13 @@
       keyUp: keyUp,
       notifySolved: function () { timer.notifySolved(); },
       newScramble: newScramble,
-      isRunning: function () { return timer.isRunning(); }
+      isRunning: function () { return timer.isRunning(); },
+      // The ghost finished the digital cube in ms (from the timer's start).
+      ghostFinished: function (ms) { if (race) { race.ghost = ms; renderRace(); } },
+      // A note on the current race, e.g. the target is faster than the animation allows.
+      raceMessage: function (text) { if (race) { race.cap = text; renderRace(); } },
+      setGhostBusy: function (on) { ghostBusy = !!on; render(); },
+      raceSettings: function () { return { on: raceSet.on, target: raceSet.target, usePB: raceSet.usePB }; }
     };
   }
 

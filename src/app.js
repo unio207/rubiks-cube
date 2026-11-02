@@ -1,5 +1,5 @@
 // app.js - wires the page together: baseline cube, CFOP hint panel (solver in a Web Worker),
-// timer, and the Cube | Algorithms | Scan tabs. Browser only; loaded last.
+// timer (with the Feature 6 race ghost), and the Cube | Algorithms | Scan tabs. Browser only; loaded last.
 (function () {
   'use strict';
 
@@ -26,6 +26,9 @@
 
   var tab = 'cube';
   var timing = false;   // inspection, space hold or timed solve in progress
+  // Race ghost (Feature 6): the digital cube solving itself while the user solves a real one.
+  var ghost = { id: 0, solution: null, waiting: false, active: false, plan: null, idx: 0, t0: 0, target: 0 };
+  function ghostBusy() { return ghost.waiting || ghost.active; }
 
   // ---------------------------------------------------------------------------
   // Solver worker. Built from the inlined core + solver source so it works from file://.
@@ -93,7 +96,7 @@
   var stale = true;       // hint no longer matches the cube
   var requestId = 0;
 
-  function hintsVisible() { return hintsOn && !timing && tab === 'cube'; }
+  function hintsVisible() { return hintsOn && !timing && !ghostBusy() && tab === 'cube'; }
 
   function refreshHints() {
     hintsBtn.textContent = 'Hints: ' + (hintsOn ? 'on' : 'off');
@@ -215,6 +218,16 @@
     pendingScramble = null;
   }
 
+  // Show the solved cube for a moment, then apply the next timer scramble.
+  function delayScramble(moves) {
+    cancelPendingScramble();
+    pendingScramble = moves;
+    scrambleTimer = setTimeout(function () {
+      scrambleTimer = 0;
+      if (timerIdle()) applyTimerScramble(moves);
+    }, 700);
+  }
+
   function applyTimerScramble(moves) {
     if (!mounted) return;   // the first scramble is applied right after mount
     cancelPendingScramble();
@@ -226,14 +239,11 @@
 
   var ui = Timer.mount($('timer'), {
     applyScramble: function (moves) {
+      // The ghost is still solving: scramble once it has finished.
+      if (mounted && ghostBusy()) { cancelPendingScramble(); pendingScramble = moves; return; }
       // After a solve, leave the solved cube visible for a moment before scrambling.
       if (mounted && ui && ui.timer.state === 'stopped' && Cube.isSolved(app.getState())) {
-        cancelPendingScramble();
-        pendingScramble = moves;
-        scrambleTimer = setTimeout(function () {
-          scrambleTimer = 0;
-          if (timerIdle()) applyTimerScramble(moves);
-        }, 700);
+        delayScramble(moves);
         return;
       }
       applyTimerScramble(moves);
@@ -241,12 +251,75 @@
     // Inspection, the space hold and the solve itself all count as timing.
     onActiveChange: function (active) {
       timing = active;
-      app.setButtonsEnabled(!active);
-      tabAlgs.disabled = active;
-      tabScan.disabled = active;
-      refreshHints();
-    }
+      updateBusy();
+    },
+    raceBlocked: function () {
+      return Cube.isSolved(app.getQueuedState())
+        ? 'The cube is already solved: scramble it (or load one from the Scan tab) to race.' : null;
+    },
+    // Work out the ghost's solution during the hold / inspection, so it is ready on release.
+    raceArm: function () {
+      var id = ++ghost.id, state = app.getQueuedState();
+      ghost.solution = null;
+      solver.solve(state, function (err, res) {
+        if (id !== ghost.id) return;
+        if (err || !res) { ghost.waiting = false; ui.raceMessage('The ghost could not solve this cube.'); updateBusy(); return; }
+        ghost.solution = res;
+        if (ghost.waiting) startGhost();
+      });
+    },
+    raceStart: function (targetMs) {
+      ghost.t0 = ui.timer.startAt;
+      ghost.target = targetMs;
+      ghost.waiting = true;
+      if (ghost.solution) startGhost();
+      updateBusy();
+    },
+    raceCancel: function () { ghost.id++; ghost.waiting = false; updateBusy(); }
   });
+
+  // Buttons, tabs, hints and keys while timing or racing. During a race the cube keys are off too,
+  // until the ghost has finished.
+  function updateBusy() {
+    var racing = (timing && ui.timer.isRace()) || ghostBusy();
+    var busy = timing || racing;
+    app.setButtonsEnabled(!busy);
+    tabAlgs.disabled = busy;
+    tabScan.disabled = busy;
+    hintsBtn.disabled = busy;
+    app.setKeysEnabled(tab === 'cube' && !racing);
+    ui.setGhostBusy(ghostBusy());
+    refreshHints();
+  }
+
+  // Play the solution on the human-like schedule, each move at its time from the timer's start.
+  function startGhost() {
+    ghost.waiting = false;
+    ghost.active = true;
+    ghost.plan = Race.schedule(ghost.solution.steps, ghost.target);
+    ghost.idx = 0;
+    if (ghost.plan.capped) {
+      ui.raceMessage('(' + Timer.formatTime(ghost.target) + ' s is faster than the animation allows for this solve: the ghost needs ' +
+        Timer.formatTime(ghost.plan.total) + ' s.)');
+    }
+    ghostTick();
+  }
+  function ghostTick() {
+    if (!ghost.active) return;
+    var t = performance.now() - ghost.t0, mv = ghost.plan.moves;
+    while (ghost.idx < mv.length && t >= mv[ghost.idx].at) {
+      app.applyMoves(mv[ghost.idx].move, { duration: mv[ghost.idx].anim });
+      ghost.idx++;
+    }
+    if (ghost.idx < mv.length) requestAnimationFrame(ghostTick);
+  }
+  function ghostMoveDone() {
+    if (!ghost.active || ghost.idx < ghost.plan.moves.length || !app.isIdle()) return;
+    ghost.active = false;
+    ui.ghostFinished(performance.now() - ghost.t0);
+    updateBusy();
+    if (pendingScramble && timerIdle()) delayScramble(pendingScramble);
+  }
   mounted = true;
   applyTimerScramble(ui.timer.scramble);   // the cube matches the scramble shown on load
 
@@ -256,7 +329,8 @@
   app.hooks.onMove = function (move, state) {
     if (app.isIdle()) scrambling = false;
     trackMove(move);
-    if (Cube.isSolved(state)) ui.notifySolved();
+    if (Cube.isSolved(state)) ui.notifySolved();   // ignored by the timer during a race
+    ghostMoveDone();
     if (app.isIdle()) refreshHints();
   };
 
@@ -278,7 +352,7 @@
 
   function setTab(name) {
     var t = ui.timer.state;
-    if (name !== 'cube' && t !== 'idle' && t !== 'stopped') return;  // finish the timed solve first
+    if (name !== 'cube' && ((t !== 'idle' && t !== 'stopped') || ghostBusy())) return;  // finish the timed solve / race first
     tab = name;
     tabCube.classList.toggle('active', name === 'cube');
     tabAlgs.classList.toggle('active', name === 'algs');
@@ -287,9 +361,9 @@
     scanEl.style.display = name === 'scan' ? '' : 'none';
     if (name === 'scan') scanTab.show(); else scanTab.hide();
     $('timer').style.display = name === 'cube' ? '' : 'none';
-    app.setKeysEnabled(name === 'cube');
-    refreshHints();
+    updateBusy();   // keys only on the Cube tab, and not while racing
   }
+  updateBusy();
   tabCube.addEventListener('click', function () { setTab('cube'); });
   tabAlgs.addEventListener('click', function () { setTab('algs'); });
   tabScan.addEventListener('click', function () { setTab('scan'); });
@@ -302,6 +376,7 @@
   window.addEventListener('keydown', function (e) {
     if (isSpace(e)) {
       e.preventDefault();
+      if (tab === 'cube' && timerIdle() && ghostBusy()) return;   // the ghost is still solving
       if (tab === 'cube' && timerIdle() && (scrambleTimer || scrambling)) {
         // Don't start inspection or a hold until the next scramble is on the cube.
         if (scrambleTimer) applyTimerScramble(pendingScramble);
@@ -314,8 +389,10 @@
     if (tab !== 'cube') return;
     if (e.key === 'Escape') { ui.keyDown(e); return; }
     if (e.repeat || e.ctrlKey || e.metaKey) return;
+    if (e.target && e.target.tagName === 'INPUT') return;     // typing a race target
+    if ((timing && ui.timer.isRace()) || ghostBusy()) return;  // racing: the cube is busy
     var key = Baseline.eventKey(e);
-    if (!e.altKey && (key === 'KeyH' || key === 'h' || key === 'H')) { e.preventDefault(); toggleHints(); return; }
+    if (!e.altKey && (key === 'KeyH' || key === 'h' || key === 'H')) { e.preventDefault(); if (!hintsBtn.disabled) toggleHints(); return; }
     // A cube key queues a move: the layer highlight would be stale while it animates,
     // and a delayed post-solve scramble must not overwrite it.
     if (Baseline.keyToMove(key, e.shiftKey, e.altKey)) { app.view.highlightLayer(null); cancelPendingScramble(); }
