@@ -71,6 +71,27 @@ Verify every alg in code: starting from its own case state, it must leave its ta
 - Save times in localStorage, wrapped in try/catch.
 - Face and rotation keys keep working while timing. Space is reserved for the timer. During a timed solve, hints are hidden and Solve/Scramble/Reset are disabled. Releasing space must never trigger a focused button.
 
+## Feature 4: Scan a real cube (added after the first build)
+A third top bar tab, Cube | Algorithms | Scan, loads a physical cube's state onto the 3D cube so hints and Solve work on it.
+- **Net editor.** An unfolded net (U above, L F R B in a row, D below) of 54 stickers plus a 6-colour palette. Click or drag to paint stickers. Unset stickers are gray. Painting a centre a different colour swaps those two colours everywhere on the net, so a whole colour group can be corrected in one click. Buttons: Clear (centres only), From cube (copy the current cube), Load onto cube.
+- **Validation**, shown live in plain words, with the offending stickers outlined: unset stickers, colour counts other than 9, centres that no real cube has (white opposite yellow, green opposite blue, red opposite orange, standard chirality), pieces that don't exist or appear twice, a twisted corner, a flipped edge, and swapped-piece parity. Load onto cube stays disabled until the net is valid.
+- **Webcam scan.** Start camera opens the webcam (getUserMedia), with a 3×3 guide over the video whose cells are tinted live with the colour each one reads. Six guided captures, holding the cube as told:
+  1. Front: any face to the camera; keep the same side on top for steps 1–4.
+  2–4. Right, Back, Left: each time, turn the whole cube a quarter turn to the left.
+  5. Up: one more quarter turn left (front faces you again), then tip the top toward the camera.
+  6. Down: tip the cube over half a turn so the bottom faces the camera.
+  Each step chip can be clicked to redo that face. After the sixth capture the colours are classified and the net is filled in for review. The camera stops when leaving the tab.
+- **Colour classification.** Each sticker is read as the median colour of the middle of its cell. The six centres decide which colour is which: of the 24 orientations of a standard cube, pick the one whose colours best match the centre readings (chirality settles red vs orange). Every sticker is then assigned to the centre it is closest to in Lab colour space, with exactly 9 stickers per colour.
+- **Loading.** Load onto cube puts the state on the 3D cube in the orientation it was scanned (Front faces you), clears the move history, refreshes hints, and switches to the Cube tab. The Scan tab is disabled during a timed solve, like Algorithms.
+- No external libraries; the page stays a single file.
+
+Acceptance for Feature 4:
+- The validator accepts every state reached by random moves (including M, wide moves and rotations) and rejects each kind of error above with the right message.
+- Every validated scrambled state is solved by the Solve button's solver.
+- The capture steps map camera cells to the correct facelets (checked against the whole-cube rotations the instructions describe).
+- Classification recovers the exact state from synthetic camera readings with noise, a brightness change and a colour-temperature shift, for random cube orientations.
+- In a browser with a fake camera stream, six captures fill the net and Load puts that state on the cube.
+
 ## Acceptance checklist
 - Baseline behaves exactly as described.
 - Any move sequence followed by its inverse returns the tracked sticker state to solved, including M, wide and half turns.

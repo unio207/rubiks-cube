@@ -32,11 +32,11 @@
   #hints .mv.next { background: #3d7bdc; color: #fff; }
   #hints .busy { color: #8a909c; }
   #timer { right: 12px; width: 340px; max-width: calc(100vw - 24px); max-height: calc(100vh - 110px); overflow-y: auto; }
-  #algs { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: #15171c; z-index: 2; }
+  #algs, #scan { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: #15171c; z-index: 2; }
   @media (max-width: 760px) {
     #hints { top: auto; bottom: 40px; }
     #timer { top: 104px; max-height: 40vh; }
-    #algs { top: 100px; }
+    #algs, #scan { top: 100px; }
   }
 </style>
 </head>
@@ -52,12 +52,14 @@
   <div class="tabs">
     <button id="tabCube" class="active" tabindex="-1">Cube</button>
     <button id="tabAlgs" tabindex="-1">Algorithms</button>
+    <button id="tabScan" tabindex="-1">Scan</button>
   </div>
 </div>
 <div id="solved" style="display:none">Solved</div>
 <div id="hints" class="panel" style="display:none"></div>
 <div id="timer" class="panel"></div>
 <div id="algs" style="display:none"></div>
+<div id="scan" style="display:none"></div>
 <div id="help"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <!-- INLINE:src/core.js id=src-core -->
@@ -66,6 +68,8 @@
 <!-- INLINE:src/baseline.js -->
 <!-- INLINE:src/timer.js -->
 <!-- INLINE:src/algtab.js -->
+<!-- INLINE:src/scan.js -->
+<!-- INLINE:src/scanui.js -->
 <!-- INLINE:src/app.js -->
 </body>
 </html>

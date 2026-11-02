@@ -14,7 +14,7 @@ function check(name, ok, info) {
 }
 var root = path.join(__dirname, '..');
 var out = cp.execFileSync(process.execPath, [path.join(root, 'tools', 'build.js')], { encoding: 'utf8' });
-check('build ran', /inlined 7 file\(s\)/.test(out), out);
+check('build ran', /inlined 9 file\(s\)/.test(out), out);
 var html = fs.readFileSync(path.join(root, 'rubiks-cube.html'), 'utf8');
 
 var scripts = [], re = /<script([^>]*)>([\s\S]*?)<\/script>/g, m;
@@ -25,7 +25,7 @@ check('external script is cdnjs Three.js r128',
   ext[0] && /src="https:\/\/cdnjs\.cloudflare\.com\/ajax\/libs\/three\.js\/r128\/three\.min\.js"/.test(ext[0].attrs));
 check('no stylesheet links', !/<link[^>]+stylesheet/i.test(html));
 var inline = scripts.filter(function (s) { return !/\bsrc=/.test(s.attrs); });
-check('7 inline scripts', inline.length === 7, inline.length);
+check('9 inline scripts', inline.length === 9, inline.length);
 inline.forEach(function (s, i) {
   var ok = true; try { new Function(s.code); } catch (e) { ok = e.message; }
   check('inline script ' + i + ' parses', ok === true, ok);
@@ -94,7 +94,7 @@ check('sticker colors U white, D yellow, F green, B blue, R red, L orange',
   C.COLOR_NAME.B === 'blue' && C.COLOR_NAME.R === 'red' && C.COLOR_NAME.L === 'orange');
 // Space never triggers a button
 var topBtns = html.match(/<button id="[^"]+"[^>]*>/g) || [];
-check('top-bar buttons tabindex=-1', topBtns.length === 6 && topBtns.every(function (b) { return /tabindex="-1"/.test(b); }), topBtns.join(' '));
+check('top-bar buttons tabindex=-1', topBtns.length === 7 && topBtns.every(function (b) { return /tabindex="-1"/.test(b); }), topBtns.join(' '));
 check('app blocks mousedown focus + blurs after click', /mousedown', function \(e\) \{ e\.preventDefault\(\); \}/.test(appSrc) && /b\.blur\(\)/.test(appSrc));
 check('app: Space keydown always preventDefault', /if \(isSpace\(e\)\) \{\s*e\.preventDefault\(\);/.test(appSrc));
 check('app: Space keyup always preventDefault', /if \(!isSpace\(e\)\) return;\s*e\.preventDefault\(\);/.test(appSrc));
@@ -102,6 +102,7 @@ var algtab = fs.readFileSync(path.join(root, 'src', 'algtab.js'), 'utf8');
 check('algtab control buttons blur after click', /b\.blur\(\); fn\(\);/.test(algtab));
 check('app: notifySolved on any solved finished move', /if \(Cube\.isSolved\(state\)\) ui\.notifySolved\(\);/.test(appSrc));
 check('app: inspection/hold/running disables Scramble/Solve/Reset + Algorithms tab', /onActiveChange: function \(active\) \{\s*timing = active;\s*app\.setButtonsEnabled\(!active\);\s*tabAlgs\.disabled = active;/.test(appSrc));
+check('app: timing disables the Scan tab', /tabAlgs\.disabled = active;\s*tabScan\.disabled = active;/.test(appSrc));
 check('app: first scramble applied after mount', /mounted = true;\s*applyTimerScramble\(ui\.timer\.scramble\);/.test(appSrc));
 check('app: Scramble/Solve/Reset and cube keys cancel a pending post-solve scramble', (appSrc.match(/cancelPendingScramble\(\)/g) || []).length >= 5);
 check('app: delayed scramble only applies when timer idle/stopped', /if \(timerIdle\(\)\) applyTimerScramble\(moves\)/.test(appSrc));

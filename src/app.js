@@ -5,8 +5,8 @@
 
   var $ = function (id) { return document.getElementById(id); };
   var scrambleBtn = $('scramble'), solveBtn = $('solve'), resetBtn = $('reset');
-  var hintsBtn = $('hintsBtn'), tabCube = $('tabCube'), tabAlgs = $('tabAlgs');
-  var hintsEl = $('hints'), algsEl = $('algs');
+  var hintsBtn = $('hintsBtn'), tabCube = $('tabCube'), tabAlgs = $('tabAlgs'), tabScan = $('tabScan');
+  var hintsEl = $('hints'), algsEl = $('algs'), scanEl = $('scan');
 
   var app = Baseline.init({
     container: $('cube'),
@@ -19,7 +19,7 @@
   $('help').textContent = Baseline.HELP_TEXT + '  ·  H: hints  ·  Space: timer';
 
   // Top-bar buttons never keep focus, so Space can never press them.
-  [scrambleBtn, solveBtn, resetBtn, hintsBtn, tabCube, tabAlgs].forEach(function (b) {
+  [scrambleBtn, solveBtn, resetBtn, hintsBtn, tabCube, tabAlgs, tabScan].forEach(function (b) {
     b.addEventListener('mousedown', function (e) { e.preventDefault(); });
     b.addEventListener('click', function () { b.blur(); });
   });
@@ -243,6 +243,7 @@
       timing = active;
       app.setButtonsEnabled(!active);
       tabAlgs.disabled = active;
+      tabScan.disabled = active;
       refreshHints();
     }
   });
@@ -263,20 +264,35 @@
   // Tabs
   // ---------------------------------------------------------------------------
   var algTab = AlgTab.mount(algsEl);
+  // Scan tab: loading a scanned or hand-entered cube replaces the 3D cube's state and history.
+  var scanTab = ScanTab.mount(scanEl, {
+    getCubeState: function () { return app.getQueuedState(); },
+    onLoad: function (state) {
+      cancelPendingScramble();
+      scrambling = false;
+      app.reset(state);
+      invalidateHint();
+      setTab('cube');
+    }
+  });
 
   function setTab(name) {
     var t = ui.timer.state;
-    if (name === 'algs' && t !== 'idle' && t !== 'stopped') return;  // finish the timed solve first
+    if (name !== 'cube' && t !== 'idle' && t !== 'stopped') return;  // finish the timed solve first
     tab = name;
     tabCube.classList.toggle('active', name === 'cube');
     tabAlgs.classList.toggle('active', name === 'algs');
+    tabScan.classList.toggle('active', name === 'scan');
     algsEl.style.display = name === 'algs' ? '' : 'none';
+    scanEl.style.display = name === 'scan' ? '' : 'none';
+    if (name === 'scan') scanTab.show(); else scanTab.hide();
     $('timer').style.display = name === 'cube' ? '' : 'none';
     app.setKeysEnabled(name === 'cube');
     refreshHints();
   }
   tabCube.addEventListener('click', function () { setTab('cube'); });
   tabAlgs.addEventListener('click', function () { setTab('algs'); });
+  tabScan.addEventListener('click', function () { setTab('scan'); });
 
   // ---------------------------------------------------------------------------
   // Keyboard: Space / Escape go to the timer, H toggles hints, cube keys are handled by Baseline.
@@ -319,5 +335,5 @@
   resetBtn.addEventListener('click', function () { cancelPendingScramble(); scrambling = false; });
 
   refreshHints();
-  window.rubiksApp = { app: app, timer: ui, algTab: algTab };
+  window.rubiksApp = { app: app, timer: ui, algTab: algTab, scanTab: scanTab };
 })();

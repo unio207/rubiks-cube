@@ -32,11 +32,11 @@
   #hints .mv.next { background: #3d7bdc; color: #fff; }
   #hints .busy { color: #8a909c; }
   #timer { right: 12px; width: 340px; max-width: calc(100vw - 24px); max-height: calc(100vh - 110px); overflow-y: auto; }
-  #algs { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: #15171c; z-index: 2; }
+  #algs, #scan { position: fixed; top: 56px; left: 0; right: 0; bottom: 0; overflow-y: auto; background: #15171c; z-index: 2; }
   @media (max-width: 760px) {
     #hints { top: auto; bottom: 40px; }
     #timer { top: 104px; max-height: 40vh; }
-    #algs { top: 100px; }
+    #algs, #scan { top: 100px; }
   }
 </style>
 </head>
@@ -52,12 +52,14 @@
   <div class="tabs">
     <button id="tabCube" class="active" tabindex="-1">Cube</button>
     <button id="tabAlgs" tabindex="-1">Algorithms</button>
+    <button id="tabScan" tabindex="-1">Scan</button>
   </div>
 </div>
 <div id="solved" style="display:none">Solved</div>
 <div id="hints" class="panel" style="display:none"></div>
 <div id="timer" class="panel"></div>
 <div id="algs" style="display:none"></div>
+<div id="scan" style="display:none"></div>
 <div id="help"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script id="src-core">
@@ -2399,6 +2401,773 @@
 
 </script>
 <script>
+// scan.js - Feature 4 logic (no DOM): validating a hand-entered or scanned state, mapping webcam
+// captures to facelets, and classifying sticker colours.
+// Browser: defines window.Scan (needs window.Cube). Node: require('./src/scan.js').
+(function (root) {
+  'use strict';
+
+  var Cube = root.Cube || (typeof require === 'function' ? require('./core.js') : null);
+
+  var FACES = Cube.FACES;                 // ['U','R','F','D','L','B']
+  var CENTERS = [4, 13, 22, 31, 40, 49];
+  var COLOR_LETTERS = ['U', 'D', 'F', 'B', 'R', 'L'];
+  var OPPOSITE = { U: 'D', D: 'U', F: 'B', B: 'F', R: 'L', L: 'R' };
+
+  // ---------------------------------------------------------------------------
+  // Whole-cube orientations: the 24 rotations reachable with x / y / z.
+  // ---------------------------------------------------------------------------
+  var ORIENTATIONS = (function () {
+    var out = [], seen = {}, frontier = [[]];
+    var solved = Cube.solvedState();
+    while (frontier.length) {
+      var next = [];
+      frontier.forEach(function (alg) {
+        var s = Cube.applyAlg(solved, alg);
+        var key = CENTERS.map(function (i) { return s[i]; }).join('');
+        if (seen[key]) return;
+        seen[key] = true;
+        out.push({ alg: alg, centers: key });
+        ['x', 'y', 'z'].forEach(function (r) { next.push(alg.concat([r])); });
+      });
+      frontier = next;
+    }
+    return out;
+  })();
+
+  function centerKey(state) { return CENTERS.map(function (i) { return state[i]; }).join(''); }
+  function validCenters(state) {
+    var k = centerKey(state);
+    return ORIENTATIONS.some(function (o) { return o.centers === k; });
+  }
+
+  // Rotate a state with valid centres so its centres are the solved ones (white U, green F, red R).
+  function normalize(state) {
+    for (var i = 0; i < ORIENTATIONS.length; i++) {
+      var inv = Cube.invertAlg(ORIENTATIONS[i].alg);
+      var s = Cube.applyAlg(state, inv);
+      if (centerKey(s) === 'URFDLB') return { state: s, alg: inv };
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Piece geometry, derived from Cube.FACELETS.
+  // ---------------------------------------------------------------------------
+  var FL = Cube.FACELETS;
+  function nonzero(p) { return (p[0] !== 0) + (p[1] !== 0) + (p[2] !== 0); }
+  function det(a, b, c) {
+    return a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
+  }
+  function axisRank(n) { return n[1] !== 0 ? 0 : n[2] !== 0 ? 1 : 2; }   // y (U/D), then z (F/B), then x (R/L)
+
+  var CORNERS = [], EDGES = [];
+  (function () {
+    var byPos = {};
+    FL.forEach(function (f, i) {
+      var key = f.pos.join();
+      (byPos[key] = byPos[key] || { pos: f.pos, idx: [] }).idx.push(i);
+    });
+    Object.keys(byPos).forEach(function (key) {
+      var p = byPos[key], n = nonzero(p.pos);
+      // Order each piece's facelets by axis rank; corners are then put in a fixed cyclic order
+      // (positive determinant of the three normals) so twist is consistent across positions.
+      var idx = p.idx.slice().sort(function (a, b) { return axisRank(FL[a].normal) - axisRank(FL[b].normal); });
+      if (n === 3) {
+        if (det(FL[idx[0]].normal, FL[idx[1]].normal, FL[idx[2]].normal) < 0) idx = [idx[0], idx[2], idx[1]];
+        CORNERS.push({ pos: p.pos, idx: idx });
+      } else if (n === 2) {
+        EDGES.push({ pos: p.pos, idx: idx });
+      }
+    });
+  })();
+
+  function faceOfNormal(n) {
+    for (var f in Cube.NORMALS) { var m = Cube.NORMALS[f]; if (m[0] === n[0] && m[1] === n[1] && m[2] === n[2]) return f; }
+    return null;
+  }
+  // Home colours of each piece slot on the solved cube (white U, green F, red R) = its face letters.
+  CORNERS.forEach(function (c) {
+    c.home = c.idx.map(function (i) { return faceOfNormal(FL[i].normal); });
+    c.name = c.home.join('');
+  });
+  EDGES.forEach(function (e) {
+    e.home = e.idx.map(function (i) { return faceOfNormal(FL[i].normal); });
+    e.name = e.home.join('');
+  });
+
+  function sameSet(a, b) {
+    return a.length === b.length && a.every(function (x) { return b.indexOf(x) >= 0; });
+  }
+  function rotateArr(a, k) { return a.slice(k).concat(a.slice(0, k)); }
+
+  function parity(perm) {
+    var seen = [], p = 0;
+    for (var i = 0; i < perm.length; i++) {
+      if (seen[i]) continue;
+      var len = 0, j = i;
+      while (!seen[j]) { seen[j] = true; j = perm[j]; len++; }
+      p += len - 1;
+    }
+    return p % 2;
+  }
+
+  var COLOR_NAME = Cube.COLOR_NAME;
+  function colorList(cols) { return cols.map(function (c) { return COLOR_NAME[c]; }).join('-'); }
+  var FACE_WORD = { U: 'top', D: 'bottom', F: 'front', B: 'back', R: 'right', L: 'left' };
+  function slotWord(name) { return name.split('').map(function (f) { return FACE_WORD[f]; }).join('-'); }
+
+  // ---------------------------------------------------------------------------
+  // validate(state) -> { ok, errors: [string], bad: [facelet index] }
+  // state: 54 entries, each a colour letter or null (not set yet).
+  // ---------------------------------------------------------------------------
+  function validate(state) {
+    var errors = [], bad = {};
+    function mark(list) { list.forEach(function (i) { bad[i] = true; }); }
+    function result() {
+      return { ok: errors.length === 0, errors: errors, bad: Object.keys(bad).map(Number).sort(function (a, b) { return a - b; }) };
+    }
+
+    if (!state || state.length !== 54) { errors.push('The net must have 54 stickers.'); return result(); }
+    var unset = 0, counts = {};
+    COLOR_LETTERS.forEach(function (c) { counts[c] = 0; });
+    state.forEach(function (c) {
+      if (c == null) unset++;
+      else if (counts[c] === undefined) unset++;
+      else counts[c]++;
+    });
+    if (unset) errors.push(unset + (unset === 1 ? ' sticker is' : ' stickers are') + ' not set yet.');
+
+    var offCount = COLOR_LETTERS.filter(function (c) { return counts[c] !== 9; });
+    if (offCount.length && !unset) {
+      errors.push('Each colour needs exactly 9 stickers: ' +
+        offCount.map(function (c) { return COLOR_NAME[c] + ' has ' + counts[c]; }).join(', ') + '.');
+    }
+
+    var centersSet = CENTERS.every(function (i) { return counts[state[i]] !== undefined; });
+    var centersOk = centersSet && validCenters(state);
+    if (centersSet && !centersOk) {
+      mark(CENTERS);
+      errors.push('The centres don\'t match a real cube: white goes opposite yellow, green opposite blue, ' +
+        'red opposite orange, and with white on top and green in front, red is on the right.');
+    }
+    if (unset || offCount.length || !centersOk) return result();
+
+    // Pieces, checked on the normalized cube; facelet indices are mapped back for highlighting.
+    var norm = normalize(state);
+    var s = norm.state;
+    var back = (function () {   // back[i] = index in `state` of what sits at index i of `s`
+      var ids = []; for (var i = 0; i < 54; i++) ids.push(String(i));
+      return Cube.applyAlg(ids, norm.alg).map(Number);
+    })();
+    function origIdx(list) { return list.map(function (i) { return back[i]; }); }
+
+    var cornerPerm = [], cornerTwist = 0, cornerSeen = {};
+    var pieceError = false;
+    CORNERS.forEach(function (slot, k) {
+      var cols = slot.idx.map(function (i) { return s[i]; });
+      var homeK = -1;
+      CORNERS.forEach(function (h, j) { if (sameSet(h.home, cols)) homeK = j; });
+      if (homeK < 0) {
+        pieceError = true; mark(origIdx(slot.idx));
+        errors.push('No real corner is ' + colorList(cols) + ' (' + slotWord(slot.name) + ' corner).');
+        return;
+      }
+      var t = cols.indexOf(CORNERS[homeK].home[0]);
+      if (rotateArr(cols, t).join('') !== CORNERS[homeK].home.join('')) {
+        pieceError = true; mark(origIdx(slot.idx));
+        errors.push('The ' + slotWord(slot.name) + ' corner has its colours in mirror order; no real corner looks like that.');
+        return;
+      }
+      if (cornerSeen[homeK] !== undefined) {
+        pieceError = true; mark(origIdx(slot.idx)); mark(origIdx(CORNERS[cornerSeen[homeK]].idx));
+        errors.push('Two corners are both ' + colorList(CORNERS[homeK].home) + '.');
+        return;
+      }
+      cornerSeen[homeK] = k;
+      cornerPerm[k] = homeK;
+      cornerTwist += t;
+    });
+
+    var edgePerm = [], edgeFlip = 0, edgeSeen = {};
+    EDGES.forEach(function (slot, k) {
+      var cols = slot.idx.map(function (i) { return s[i]; });
+      var homeK = -1;
+      EDGES.forEach(function (h, j) { if (sameSet(h.home, cols)) homeK = j; });
+      if (homeK < 0) {
+        pieceError = true; mark(origIdx(slot.idx));
+        errors.push('No real edge is ' + colorList(cols) + ' (' + slotWord(slot.name) + ' edge).');
+        return;
+      }
+      if (edgeSeen[homeK] !== undefined) {
+        pieceError = true; mark(origIdx(slot.idx)); mark(origIdx(EDGES[edgeSeen[homeK]].idx));
+        errors.push('Two edges are both ' + colorList(EDGES[homeK].home) + '.');
+        return;
+      }
+      edgeSeen[homeK] = k;
+      edgePerm[k] = homeK;
+      edgeFlip += cols[0] === EDGES[homeK].home[0] ? 0 : 1;
+    });
+    if (pieceError) return result();
+
+    if (cornerTwist % 3 !== 0) {
+      errors.push('A corner is twisted in place (the corner twists add up wrong). Check the corners, ' +
+        'or twist one back on the real cube.');
+    }
+    if (edgeFlip % 2 !== 0) {
+      errors.push('An edge is flipped in place. Check the edges, or flip one back on the real cube.');
+    }
+    if (parity(cornerPerm) !== parity(edgePerm)) {
+      errors.push('Two pieces are swapped (parity). Check for two stickers entered the wrong way round, ' +
+        'or swap two pieces back on the real cube.');
+    }
+    return result();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Webcam capture steps. The camera sees the front face; `rot` is the whole-cube rotation from
+  // the first hold to this step's hold. cells[k] is the facelet shown at camera cell k
+  // (row-major, row 0 at the top, column 0 on the left as the camera sees it).
+  // ---------------------------------------------------------------------------
+  var STEPS = [
+    { face: 'F', rot: [], title: 'Front',
+      text: 'Hold any face toward the camera. Keep the same side on top for the next three steps.' },
+    { face: 'R', rot: ['y'], title: 'Right',
+      text: 'Turn the whole cube a quarter turn to the left, so the right side faces the camera.' },
+    { face: 'B', rot: ['y2'], title: 'Back',
+      text: 'Another quarter turn to the left.' },
+    { face: 'L', rot: ["y'"], title: 'Left',
+      text: 'Another quarter turn to the left.' },
+    { face: 'U', rot: ["x'"], title: 'Up',
+      text: 'One more quarter turn left (the front faces you again), then tip the top toward the camera.' },
+    { face: 'D', rot: ['x'], title: 'Down',
+      text: 'Tip the cube over half a turn, so the bottom faces the camera.' }
+  ];
+  (function () {
+    var ids = []; for (var i = 0; i < 54; i++) ids.push(String(i));
+    STEPS.forEach(function (st) { st.cells = Cube.applyAlg(ids, st.rot).slice(18, 27).map(Number); });
+  })();
+
+  // ---------------------------------------------------------------------------
+  // Colours: sRGB -> CIE Lab, palette, classification.
+  // ---------------------------------------------------------------------------
+  function lin(c) { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+  function toLab(rgb) {
+    var r = lin(rgb[0]), g = lin(rgb[1]), b = lin(rgb[2]);
+    var x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047;
+    var y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    var z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+    function f(t) { return t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116; }
+    var fx = f(x), fy = f(y), fz = f(z);
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+  }
+  function dist(a, b) { var d0 = a[0] - b[0], d1 = a[1] - b[1], d2 = a[2] - b[2]; return Math.sqrt(d0 * d0 + d1 * d1 + d2 * d2); }
+
+  // Typical sticker colours as a camera sees them.
+  var PALETTE = { U: [235, 235, 230], D: [235, 220, 40], F: [20, 160, 80], B: [20, 80, 190], R: [190, 25, 40], L: [245, 110, 20] };
+  var PALETTE_LAB = {};
+  COLOR_LETTERS.forEach(function (c) { PALETTE_LAB[c] = toLab(PALETTE[c]); });
+
+  // Nearest palette colour for a single reading (used for the live tint over the video).
+  function nearestColor(rgb) {
+    var lab = toLab(rgb), best = null, bd = Infinity;
+    COLOR_LETTERS.forEach(function (c) { var d = dist(lab, PALETTE_LAB[c]); if (d < bd) { bd = d; best = c; } });
+    return best;
+  }
+
+  // Lightness counts less than colour, so shading across a face matters less than hue.
+  function weighted(a, b) { var d0 = (a[0] - b[0]) * 0.5, d1 = a[1] - b[1], d2 = a[2] - b[2]; return Math.sqrt(d0 * d0 + d1 * d1 + d2 * d2); }
+
+  // Every cube has exactly 9 stickers of each colour, so the average of all 54 readings should be the
+  // average of the palette. Scaling each channel to make it so removes the light's colour cast and
+  // brightness before matching centres to palette colours.
+  function balance(readings) {
+    var mean = [0, 0, 0], want = [0, 0, 0];
+    readings.forEach(function (c) { for (var j = 0; j < 3; j++) mean[j] += lin(c[j]) / readings.length; });
+    COLOR_LETTERS.forEach(function (c) { for (var j = 0; j < 3; j++) want[j] += lin(PALETTE[c][j]) / 6; });
+    return readings.map(function (c) {
+      return c.map(function (v, j) {
+        var l = mean[j] > 0 ? lin(v) * want[j] / mean[j] : lin(v);
+        l = Math.min(1, Math.max(0, l));
+        return 255 * (l <= 0.0031308 ? 12.92 * l : 1.055 * Math.pow(l, 1 / 2.4) - 0.055);
+      });
+    });
+  }
+
+  // classify(readings) -> state. readings[i] is the [r,g,b] read for facelet i (all 54).
+  // 1. The centres pick the orientation: of the 24 orientations of a standard cube, the one whose
+  //    colours best match the centre readings. 2. Each sticker goes to the centre it is closest to,
+  //    greedily from the closest pairs, with exactly 9 stickers per colour.
+  function classify(readings) {
+    var labs = balance(readings).map(toLab);
+    var centerLab = CENTERS.map(function (i) { return labs[i]; });
+    var bestO = null, bestCost = Infinity;
+    ORIENTATIONS.forEach(function (o) {
+      var cost = 0;
+      for (var k = 0; k < 6; k++) cost += dist(centerLab[k], PALETTE_LAB[o.centers[k]]);
+      if (cost < bestCost) { bestCost = cost; bestO = o; }
+    });
+    var letters = bestO.centers.split('');   // letters[k] = colour of the centre at CENTERS[k]
+    var out = assign(labs, letters, centerLab);
+    // A single centre is a noisy reference: refine against the mean of each colour's 9 stickers.
+    for (var iter = 0; iter < 4; iter++) {
+      var means = letters.map(function (c) {
+        var m = [0, 0, 0];
+        out.forEach(function (x, i) { if (x === c) for (var j = 0; j < 3; j++) m[j] += labs[i][j] / 9; });
+        return m;
+      });
+      var next = assign(labs, letters, means);
+      if (next.join('') === out.join('')) break;
+      out = next;
+    }
+    return out;
+  }
+
+  // Greedy balanced assignment: closest (sticker, colour) pairs first, 9 stickers per colour,
+  // centres fixed. refs[k] is the reference Lab for letters[k].
+  function assign(labs, letters, refs) {
+    var out = new Array(54), left = {};
+    letters.forEach(function (c, k) { out[CENTERS[k]] = c; left[c] = 8; });
+    var pairs = [];
+    for (var i = 0; i < 54; i++) {
+      if (CENTERS.indexOf(i) >= 0) continue;
+      for (var k = 0; k < 6; k++) pairs.push({ i: i, c: letters[k], d: weighted(labs[i], refs[k]) });
+    }
+    pairs.sort(function (a, b) { return a.d - b.d; });
+    pairs.forEach(function (p) {
+      if (out[p.i] !== undefined || left[p.c] === 0) return;
+      out[p.i] = p.c;
+      left[p.c]--;
+    });
+    return out;
+  }
+
+  // readings from the six captures: captures[stepIndex] = 9 [r,g,b] in camera cell order.
+  function readingsFromCaptures(captures) {
+    var readings = new Array(54);
+    STEPS.forEach(function (st, k) {
+      st.cells.forEach(function (f, cell) { readings[f] = captures[k][cell]; });
+    });
+    return readings;
+  }
+
+  // Median colour of a w*h RGBA pixel buffer over the middle `frac` of each of the 3x3 cells of the
+  // square (x0, y0, size). Returns 9 [r,g,b] in camera cell order.
+  function sampleGrid(data, w, h, x0, y0, size, frac) {
+    frac = frac || 0.5;
+    var out = [], cell = size / 3;
+    for (var r = 0; r < 3; r++) {
+      for (var c = 0; c < 3; c++) {
+        var cx = x0 + (c + 0.5) * cell, cy = y0 + (r + 0.5) * cell, half = cell * frac / 2;
+        var rs = [], gs = [], bs = [];
+        var step = Math.max(1, Math.floor(half / 6));
+        for (var y = Math.round(cy - half); y < cy + half; y += step) {
+          for (var x = Math.round(cx - half); x < cx + half; x += step) {
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            var p = (y * w + x) * 4;
+            rs.push(data[p]); gs.push(data[p + 1]); bs.push(data[p + 2]);
+          }
+        }
+        out.push([median(rs), median(gs), median(bs)]);
+      }
+    }
+    return out;
+  }
+  function median(a) {
+    if (!a.length) return 0;
+    a.sort(function (x, y) { return x - y; });
+    return a[a.length >> 1];
+  }
+
+  var Scan = {
+    ORIENTATIONS: ORIENTATIONS,
+    CENTERS: CENTERS,
+    COLOR_LETTERS: COLOR_LETTERS,
+    OPPOSITE: OPPOSITE,
+    STEPS: STEPS,
+    PALETTE: PALETTE,
+    validCenters: validCenters,
+    normalize: normalize,
+    validate: validate,
+    toLab: toLab,
+    nearestColor: nearestColor,
+    classify: classify,
+    readingsFromCaptures: readingsFromCaptures,
+    sampleGrid: sampleGrid
+  };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = Scan;
+  else root.Scan = Scan;
+})(typeof self !== 'undefined' ? self : (typeof globalThis !== 'undefined' ? globalThis : this));
+
+</script>
+<script>
+// scanui.js - Feature 4 UI: the Scan tab. A paintable net with live validation, and a webcam
+// scanner that fills the net from six guided captures. Browser only; needs window.Cube and window.Scan.
+(function (root) {
+  'use strict';
+
+  var Cube = root.Cube, Scan = root.Scan;
+  var GRAY = '#4a4f59';
+  var GUIDE = 0.6;          // guide square side, as a fraction of the shorter video side
+  var TINT_MS = 250;        // live tint refresh
+
+  var CSS = [
+    '.sc-wrap{display:flex;flex-wrap:wrap;gap:16px;padding:16px;box-sizing:border-box;align-items:flex-start}',
+    '.sc-card{background:#1e2128;border:1px solid #2f343e;border-radius:10px;padding:14px;color:#ddd;box-sizing:border-box;display:flex;flex-direction:column;gap:12px;min-width:0}',
+    '.sc-card h2{font-size:16px;margin:0;font-weight:600}',
+    '.sc-note{color:#8a909c;font-size:13px;line-height:1.4;margin:0}',
+    '.sc-net{display:grid;grid-template-columns:repeat(12,var(--sz));grid-auto-rows:var(--sz);gap:2px;--sz:26px;touch-action:none;user-select:none;max-width:100%}',
+    '.sc-st{border-radius:4px;cursor:pointer;box-sizing:border-box;border:1px solid #0d0e11}',
+    '.sc-st.sc-ctr{border-radius:50%;border:2px solid #0d0e11}',
+    '.sc-st.sc-bad{outline:2px solid #ff5a5a;outline-offset:-1px}',
+    '.sc-gap{width:6px}',
+    '.sc-pal{display:flex;flex-wrap:wrap;gap:6px;align-items:center}',
+    '.sc-sw{width:30px;height:30px;border-radius:6px;border:2px solid #0d0e11;cursor:pointer;padding:0}',
+    '.sc-sw.on{outline:2px solid #3d7bdc;outline-offset:2px}',
+    '.sc-btns{display:flex;flex-wrap:wrap;gap:8px}',
+    '.sc-btns button,.sc-chip{background:#2a2e37;color:#eee;border:1px solid #444a56;border-radius:6px;padding:7px 14px;font:inherit;cursor:pointer}',
+    '.sc-btns button:hover:not(:disabled),.sc-chip:hover{background:#353a45}',
+    '.sc-btns button:disabled{opacity:0.4;cursor:default}',
+    '.sc-btns button.sc-main:not(:disabled){background:#24497e;border-color:#3d7bdc}',
+    '.sc-errs{margin:0;padding-left:18px;color:#ffb0b0;font-size:13px;line-height:1.45}',
+    '.sc-ok{color:#3ddc84;font-size:14px}',
+    '.sc-video{position:relative;background:#0d0e11;border-radius:8px;overflow:hidden;width:100%}',
+    '.sc-video video{display:block;width:100%;height:auto}',
+    '.sc-video video.sc-mirror{transform:scaleX(-1)}',
+    '.sc-guide{position:absolute;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:4px;pointer-events:none}',
+    '.sc-guide div{border:2px solid rgba(255,255,255,0.85);border-radius:6px;box-shadow:0 0 0 1px rgba(0,0,0,0.5)}',
+    '.sc-steps{display:flex;flex-wrap:wrap;gap:6px}',
+    '.sc-chip{display:flex;align-items:center;gap:6px;padding:5px 9px;font-size:13px}',
+    '.sc-chip.on{border-color:#3d7bdc;background:#24497e}',
+    '.sc-mini{display:grid;grid-template-columns:repeat(3,6px);grid-auto-rows:6px;gap:1px}',
+    '.sc-mini i{display:block;border-radius:1px}',
+    '.sc-instr{font-size:14px;line-height:1.4;margin:0}',
+    '.sc-instr b{color:#8fb8ff}',
+    '.sc-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:#b8bec8}',
+    '@media (max-width:420px){.sc-net{--sz:calc((100vw - 90px) / 12)}}'
+  ].join('\n');
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function hex(letter) { return '#' + ('000000' + Cube.COLOR_HEX[letter].toString(16)).slice(-6); }
+
+  // Net layout: [face, gridRow, gridCol] of each face's top-left sticker.
+  var NET = { U: [0, 3], L: [3, 0], F: [3, 3], R: [3, 6], B: [3, 9], D: [6, 3] };
+
+  function clearedNet() {
+    var s = Cube.solvedState(), out = [];
+    for (var i = 0; i < 54; i++) out.push(Scan.CENTERS.indexOf(i) >= 0 ? s[i] : null);
+    return out;
+  }
+
+  // opts: { getCubeState(): state, onLoad(state) }
+  function mount(container, opts) {
+    if (!document.getElementById('sc-style')) {
+      var st = el('style'); st.id = 'sc-style'; st.textContent = CSS; document.head.appendChild(st);
+    }
+    var net = clearedNet();
+    var brush = 'U';
+    var wrap = el('div', 'sc-wrap');
+    container.appendChild(wrap);
+
+    // ---------------- Net editor ----------------
+    var edit = el('div', 'sc-card');
+    edit.style.flex = '1 1 380px';
+    wrap.appendChild(edit);
+    edit.appendChild(el('h2', null, 'Cube net'));
+    edit.appendChild(el('p', 'sc-note', 'Pick a colour, then click or drag over stickers. The net is your cube unfolded: ' +
+      'top above, then left, front, right and back, bottom below. Painting a centre swaps that colour everywhere.'));
+
+    var pal = el('div', 'sc-pal'), swatches = {};
+    Scan.COLOR_LETTERS.concat([null]).forEach(function (c) {
+      var b = el('button', 'sc-sw');
+      b.style.background = c ? hex(c) : GRAY;
+      b.title = c ? Cube.COLOR_NAME[c] : 'Unset';
+      b.setAttribute('aria-label', b.title);
+      b.addEventListener('click', function () { brush = c; renderPalette(); });
+      swatches[c] = b;
+      pal.appendChild(b);
+    });
+    edit.appendChild(pal);
+    function renderPalette() {
+      Object.keys(swatches).forEach(function (k) { swatches[k].classList.toggle('on', String(brush) === k); });
+    }
+
+    var netEl = el('div', 'sc-net'), cells = [];
+    Object.keys(NET).forEach(function (f) {
+      var fi = Cube.FACES.indexOf(f);
+      for (var k = 0; k < 9; k++) {
+        var i = fi * 9 + k, d = el('div', 'sc-st' + (k === 4 ? ' sc-ctr' : ''));
+        d.style.gridRow = String(NET[f][0] + Math.floor(k / 3) + 1);
+        d.style.gridColumn = String(NET[f][1] + (k % 3) + 1);
+        d.dataset.i = i;
+        d.title = f + ' face' + (k === 4 ? ' centre' : '');
+        cells[i] = d;
+        netEl.appendChild(d);
+      }
+    });
+    edit.appendChild(netEl);
+
+    var painting = false;
+    function paintAt(target, first) {
+      if (!target || target.dataset.i === undefined) return;
+      var i = +target.dataset.i;
+      if (Scan.CENTERS.indexOf(i) >= 0) {
+        if (!first || !brush || net[i] === brush) return;
+        var a = net[i], b = brush;   // swap colours a <-> b across the net
+        net = net.map(function (c) { return c === a ? b : c === b ? a : c; });
+      } else {
+        if (net[i] === brush) return;
+        net[i] = brush;
+      }
+      render();
+    }
+    netEl.addEventListener('pointerdown', function (e) {
+      painting = true;
+      paintAt(e.target, true);
+      e.preventDefault();
+    });
+    netEl.addEventListener('pointermove', function (e) {
+      if (!painting) return;
+      paintAt(document.elementFromPoint(e.clientX, e.clientY), false);
+    });
+    window.addEventListener('pointerup', function () { painting = false; });
+    window.addEventListener('pointercancel', function () { painting = false; });
+
+    var btns = el('div', 'sc-btns');
+    var clearBtn = el('button', null, 'Clear');
+    var fromBtn = el('button', null, 'From cube');
+    var loadBtn = el('button', 'sc-main', 'Load onto cube');
+    clearBtn.title = 'Unset every sticker except the centres';
+    fromBtn.title = 'Copy the 3D cube into the net';
+    [clearBtn, fromBtn, loadBtn].forEach(function (b) { btns.appendChild(b); });
+    edit.appendChild(btns);
+    clearBtn.addEventListener('click', function () { setNet(clearedNet()); });
+    fromBtn.addEventListener('click', function () { setNet(opts.getCubeState()); });
+    loadBtn.addEventListener('click', function () {
+      if (Scan.validate(net).ok) opts.onLoad(net.slice());
+    });
+
+    var status = el('div');
+    edit.appendChild(status);
+
+    function render() {
+      var v = Scan.validate(net), bad = {};
+      v.bad.forEach(function (i) { bad[i] = true; });
+      net.forEach(function (c, i) {
+        cells[i].style.background = c ? hex(c) : GRAY;
+        cells[i].classList.toggle('sc-bad', !!bad[i]);
+      });
+      status.textContent = '';
+      if (v.ok) status.appendChild(el('div', 'sc-ok', 'This is a valid cube. Load it, then use Hints or Solve.'));
+      else {
+        var ul = el('ul', 'sc-errs');
+        v.errors.forEach(function (e) { ul.appendChild(el('li', null, e)); });
+        status.appendChild(ul);
+      }
+      loadBtn.disabled = !v.ok;
+      return v;
+    }
+    function setNet(state) { net = state.map(function (c) { return c == null ? null : c; }); render(); }
+
+    // ---------------- Webcam ----------------
+    var cam = el('div', 'sc-card');
+    cam.style.flex = '1 1 360px';
+    cam.style.maxWidth = '640px';
+    wrap.appendChild(cam);
+    cam.appendChild(el('h2', null, 'Scan with camera'));
+    cam.appendChild(el('p', 'sc-note', 'Scan the six faces in order, filling the guide with one face each time. ' +
+      'Even, bright light works best. Afterwards, check the net against your cube and fix any sticker.'));
+
+    var camBtns = el('div', 'sc-btns');
+    var startBtn = el('button', 'sc-main', 'Start camera');
+    var captureBtn = el('button', 'sc-main', 'Capture');
+    var stopBtn = el('button', null, 'Stop camera');
+    [startBtn, captureBtn, stopBtn].forEach(function (b) { camBtns.appendChild(b); });
+
+    var stepsEl = el('div', 'sc-steps'), chips = [];
+    var instr = el('p', 'sc-instr');
+    var videoBox = el('div', 'sc-video');
+    var video = el('video');
+    video.setAttribute('playsinline', '');
+    video.muted = true;
+    var guide = el('div', 'sc-guide'), guideCells = [];
+    for (var g = 0; g < 9; g++) { var gc = el('div'); guideCells.push(gc); guide.appendChild(gc); }
+    videoBox.appendChild(video);
+    videoBox.appendChild(guide);
+    var mirrorRow = el('label', 'sc-row');
+    var mirrorBox = el('input');
+    mirrorBox.type = 'checkbox';
+    mirrorBox.checked = true;
+    mirrorRow.appendChild(mirrorBox);
+    mirrorRow.appendChild(document.createTextNode('Mirror the preview (like a mirror; does not change what is read)'));
+    var camMsg = el('p', 'sc-note');
+
+    cam.appendChild(stepsEl);
+    cam.appendChild(instr);
+    cam.appendChild(videoBox);
+    cam.appendChild(mirrorRow);
+    cam.appendChild(camBtns);
+    cam.appendChild(camMsg);
+
+    var captures = [null, null, null, null, null, null];
+    var stepIdx = 0;
+    var stream = null, tintTimer = 0, visible = false;
+    var canvas = el('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    Scan.STEPS.forEach(function (st, k) {
+      var chip = el('button', 'sc-chip');
+      var mini = el('span', 'sc-mini');
+      for (var j = 0; j < 9; j++) mini.appendChild(el('i'));
+      chip.appendChild(mini);
+      chip.appendChild(el('span', null, (k + 1) + '. ' + st.title));
+      chip.title = 'Scan (or rescan) the ' + st.title.toLowerCase() + ' face';
+      chip.addEventListener('click', function () { stepIdx = k; renderCam(); });
+      chips.push({ el: chip, mini: mini });
+      stepsEl.appendChild(chip);
+    });
+
+    function renderCam() {
+      var running = !!stream;
+      startBtn.style.display = running ? 'none' : '';
+      captureBtn.style.display = stopBtn.style.display = running ? '' : 'none';
+      videoBox.style.display = mirrorRow.style.display = running ? '' : 'none';
+      video.classList.toggle('sc-mirror', mirrorBox.checked);
+      chips.forEach(function (c, k) {
+        c.el.classList.toggle('on', k === stepIdx);
+        var cap = captures[k];
+        Array.prototype.forEach.call(c.mini.children, function (dot, j) {
+          dot.style.background = cap ? hex(Scan.nearestColor(cap[j])) : GRAY;
+        });
+      });
+      var st = Scan.STEPS[stepIdx];
+      instr.textContent = '';
+      instr.appendChild(el('b', null, 'Step ' + (stepIdx + 1) + ' of 6, ' + st.title + ': '));
+      instr.appendChild(document.createTextNode(st.text));
+      placeGuide();
+    }
+    mirrorBox.addEventListener('change', renderCam);
+
+    function placeGuide() {
+      var w = videoBox.clientWidth, h = video.clientHeight;
+      if (!w || !h) return;
+      var size = GUIDE * Math.min(w, h);
+      guide.style.width = guide.style.height = size + 'px';
+      guide.style.left = (w - size) / 2 + 'px';
+      guide.style.top = (h - size) / 2 + 'px';
+    }
+    window.addEventListener('resize', placeGuide);
+    video.addEventListener('loadedmetadata', placeGuide);
+
+    // Reads the guide's 9 cells from the current frame (camera cell order, unmirrored).
+    function readFrame(maxW) {
+      var vw = video.videoWidth, vh = video.videoHeight;
+      if (!vw || !vh) return null;
+      var k = Math.min(1, maxW / vw), w = Math.round(vw * k), h = Math.round(vh * k);
+      canvas.width = w; canvas.height = h;
+      ctx.drawImage(video, 0, 0, w, h);
+      var size = GUIDE * Math.min(w, h);
+      var data = ctx.getImageData(0, 0, w, h).data;
+      return Scan.sampleGrid(data, w, h, (w - size) / 2, (h - size) / 2, size, 0.5);
+    }
+
+    function tint() {
+      if (!stream) return;
+      var cellsRead = readFrame(320);
+      if (!cellsRead) return;
+      guideCells.forEach(function (gcEl, k) {
+        // The guide sits over the (maybe mirrored) preview: mirror the column to match what is shown.
+        var r = Math.floor(k / 3), c = k % 3, src = r * 3 + (mirrorBox.checked ? 2 - c : c);
+        var col = hex(Scan.nearestColor(cellsRead[src]));
+        gcEl.style.background = col + '66';
+        gcEl.style.borderColor = col;
+      });
+    }
+
+    function startCamera() {
+      camMsg.textContent = '';
+      var md = navigator.mediaDevices;
+      if (!md || !md.getUserMedia) {
+        camMsg.textContent = 'This browser can\'t open a camera here (it needs https or a local file in a recent browser). ' +
+          'You can still fill in the net by hand.';
+        return;
+      }
+      startBtn.disabled = true;
+      md.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+        .then(function (s) {
+          startBtn.disabled = false;
+          if (!visible) { s.getTracks().forEach(function (t) { t.stop(); }); return; }
+          stream = s;
+          video.srcObject = s;
+          var p = video.play();
+          if (p && p.catch) p.catch(function () {});
+          clearInterval(tintTimer);
+          tintTimer = setInterval(tint, TINT_MS);
+          renderCam();
+        })
+        .catch(function (err) {
+          startBtn.disabled = false;
+          var name = err && err.name;
+          camMsg.textContent = name === 'NotAllowedError' ? 'Camera permission was denied. Allow it in the browser and try again, or fill in the net by hand.'
+            : name === 'NotFoundError' ? 'No camera was found. You can fill in the net by hand.'
+              : 'The camera could not start (' + (err && err.message || name || err) + '). You can fill in the net by hand.';
+        });
+    }
+
+    function stopCamera() {
+      clearInterval(tintTimer);
+      tintTimer = 0;
+      if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+      stream = null;
+      video.srcObject = null;
+      renderCam();
+    }
+
+    function capture() {
+      var read = readFrame(640);
+      if (!read) { camMsg.textContent = 'The camera has no picture yet; try again in a moment.'; return; }
+      captures[stepIdx] = read;
+      var missing = captures.indexOf(null);
+      if (missing < 0) {
+        setNet(Scan.classify(Scan.readingsFromCaptures(captures)));
+        camMsg.textContent = 'All six faces scanned and the net is filled in. Check it against your cube, fix any sticker, then Load.';
+        stepIdx = Math.min(stepIdx + 1, 5);
+      } else {
+        stepIdx = captures.indexOf(null, stepIdx) >= 0 ? captures.indexOf(null, stepIdx) : missing;
+        camMsg.textContent = '';
+      }
+      renderCam();
+    }
+
+    startBtn.addEventListener('click', startCamera);
+    stopBtn.addEventListener('click', stopCamera);
+    captureBtn.addEventListener('click', capture);
+
+    render();
+    renderPalette();
+    renderCam();
+
+    return {
+      show: function () { visible = true; placeGuide(); },
+      hide: function () { visible = false; stopCamera(); },
+      getNet: function () { return net.slice(); },
+      setNet: setNet,
+      validate: function () { return Scan.validate(net); },
+      captures: function () { return captures.slice(); },
+      isCameraOn: function () { return !!stream; }
+    };
+  }
+
+  root.ScanTab = { mount: mount };
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
 // app.js - wires the page together: baseline cube, CFOP hint panel (solver in a Web Worker),
 // timer, and the Cube | Algorithms tabs. Browser only; loaded last.
 (function () {
@@ -2406,8 +3175,8 @@
 
   var $ = function (id) { return document.getElementById(id); };
   var scrambleBtn = $('scramble'), solveBtn = $('solve'), resetBtn = $('reset');
-  var hintsBtn = $('hintsBtn'), tabCube = $('tabCube'), tabAlgs = $('tabAlgs');
-  var hintsEl = $('hints'), algsEl = $('algs');
+  var hintsBtn = $('hintsBtn'), tabCube = $('tabCube'), tabAlgs = $('tabAlgs'), tabScan = $('tabScan');
+  var hintsEl = $('hints'), algsEl = $('algs'), scanEl = $('scan');
 
   var app = Baseline.init({
     container: $('cube'),
@@ -2420,7 +3189,7 @@
   $('help').textContent = Baseline.HELP_TEXT + '  ·  H: hints  ·  Space: timer';
 
   // Top-bar buttons never keep focus, so Space can never press them.
-  [scrambleBtn, solveBtn, resetBtn, hintsBtn, tabCube, tabAlgs].forEach(function (b) {
+  [scrambleBtn, solveBtn, resetBtn, hintsBtn, tabCube, tabAlgs, tabScan].forEach(function (b) {
     b.addEventListener('mousedown', function (e) { e.preventDefault(); });
     b.addEventListener('click', function () { b.blur(); });
   });
@@ -2644,6 +3413,7 @@
       timing = active;
       app.setButtonsEnabled(!active);
       tabAlgs.disabled = active;
+      tabScan.disabled = active;
       refreshHints();
     }
   });
@@ -2664,20 +3434,35 @@
   // Tabs
   // ---------------------------------------------------------------------------
   var algTab = AlgTab.mount(algsEl);
+  // Scan tab: loading a scanned or hand-entered cube replaces the 3D cube's state and history.
+  var scanTab = ScanTab.mount(scanEl, {
+    getCubeState: function () { return app.getQueuedState(); },
+    onLoad: function (state) {
+      cancelPendingScramble();
+      scrambling = false;
+      app.reset(state);
+      invalidateHint();
+      setTab('cube');
+    }
+  });
 
   function setTab(name) {
     var t = ui.timer.state;
-    if (name === 'algs' && t !== 'idle' && t !== 'stopped') return;  // finish the timed solve first
+    if (name !== 'cube' && t !== 'idle' && t !== 'stopped') return;  // finish the timed solve first
     tab = name;
     tabCube.classList.toggle('active', name === 'cube');
     tabAlgs.classList.toggle('active', name === 'algs');
+    tabScan.classList.toggle('active', name === 'scan');
     algsEl.style.display = name === 'algs' ? '' : 'none';
+    scanEl.style.display = name === 'scan' ? '' : 'none';
+    if (name === 'scan') scanTab.show(); else scanTab.hide();
     $('timer').style.display = name === 'cube' ? '' : 'none';
     app.setKeysEnabled(name === 'cube');
     refreshHints();
   }
   tabCube.addEventListener('click', function () { setTab('cube'); });
   tabAlgs.addEventListener('click', function () { setTab('algs'); });
+  tabScan.addEventListener('click', function () { setTab('scan'); });
 
   // ---------------------------------------------------------------------------
   // Keyboard: Space / Escape go to the timer, H toggles hints, cube keys are handled by Baseline.
@@ -2720,7 +3505,7 @@
   resetBtn.addEventListener('click', function () { cancelPendingScramble(); scrambling = false; });
 
   refreshHints();
-  window.rubiksApp = { app: app, timer: ui, algTab: algTab };
+  window.rubiksApp = { app: app, timer: ui, algTab: algTab, scanTab: scanTab };
 })();
 
 </script>
