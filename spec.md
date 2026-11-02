@@ -6,7 +6,7 @@ Build a single-file browser Rubik's cube game, rubiks-cube.html, from the spec b
 - Node is available for running tests on the cube logic if you want; tests can live in a separate file.
 
 ## Scope
-In: Baseline rebuild, Feature 1 (hints), Feature 2 (algorithms tab), Feature 3 (timer), acceptance checklist.
+In: Baseline rebuild, Feature 1 (hints), Feature 2 (algorithms tab), Feature 3 (timer), acceptance checklist. Features 4 and 5 were added later.
 Out: anything not listed here. No unsolicited features.
 
 ## Baseline (rebuild exactly)
@@ -91,6 +91,19 @@ Acceptance for Feature 4:
 - The capture steps map camera cells to the correct facelets (checked against the whole-cube rotations the instructions describe).
 - Classification recovers the exact state from synthetic camera readings with noise, a brightness change and a colour-temperature shift, for random cube orientations.
 - In a browser with a fake camera stream, six captures fill the net and Load puts that state on the cube.
+
+## Feature 5: Low-effort scanning (added after Feature 4)
+Scanning should need as few clicks and as little care as possible. Builds on Feature 4's webcam scan.
+- **Auto-capture.** On by default (an "Auto-capture" checkbox turns it off). A face is captured automatically once it has been held steady in the guide for about 0.75 s. It counts as a face when every cell is one even colour and either the cells show at least two colours or dark gaps separate the cells (so a solved face counts, a blank wall doesn't). After a capture, the cube must move before the next one, and a face that matches one already captured is never captured again. That way, holding a face still never captures it twice. The guide border shows the state: white while waiting, yellow while holding steady, a green flash on capture. The Capture button stays for manual use (for example, a stickerless cube with a solved face).
+- **Auto-advance.** Each capture moves on to the next unscanned step, and the sixth fills the net. Clicking a step chip rescans that face.
+- **Any order, any rotation.** The steps are only a suggested order. When the six captures don't make a valid cube in the suggested order, each capture's face is worked out from its centre colour and its rotation from the shared edges and corners: the combination that makes the most real pieces wins, and a valid cube always wins. Step 1 is the front, and the side at the top of step 1's picture is up. The result is loaded in that orientation, and a note says the faces were rearranged.
+- **Steady camera.** After the first capture, the camera's exposure and white balance are locked at their current values where the camera allows it (best effort; the readings already tolerate exposure changes). They unlock when the camera stops.
+- **Mid-solve cubes.** Any valid state can be scanned, including a partly solved cube with whole faces of one colour.
+
+Acceptance for Feature 5:
+- Captures given in any order and any rotation, with camera noise, give the same state as captures in the guided order.
+- The auto-capture logic (in `scan.js`, no DOM) captures a steady face exactly once, waits for movement, ignores a repeated face, captures a uniform face only when it has gaps, and ignores a blank or moving view.
+- In a browser with a fake camera that shows the six faces in turn, without pressing Capture, the net fills in and validates.
 
 ## Acceptance checklist
 - Baseline behaves exactly as described.

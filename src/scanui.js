@@ -32,6 +32,9 @@
     '.sc-video video{display:block;width:100%;height:auto}',
     '.sc-video video.sc-mirror{transform:scaleX(-1)}',
     '.sc-guide{position:absolute;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:4px;pointer-events:none}',
+    '.sc-guide{outline:3px solid transparent;outline-offset:4px;border-radius:8px;transition:outline-color 0.15s}',
+    '.sc-guide.sc-hold{outline-color:#ffd23d}',
+    '.sc-guide.sc-flash{outline-color:#3ddc84}',
     '.sc-guide div{border:2px solid rgba(255,255,255,0.85);border-radius:6px;box-shadow:0 0 0 1px rgba(0,0,0,0.5)}',
     '.sc-steps{display:flex;flex-wrap:wrap;gap:6px}',
     '.sc-chip{display:flex;align-items:center;gap:6px;padding:5px 9px;font-size:13px}',
@@ -177,8 +180,9 @@
     cam.style.maxWidth = '640px';
     wrap.appendChild(cam);
     cam.appendChild(el('h2', null, 'Scan with camera'));
-    cam.appendChild(el('p', 'sc-note', 'Scan the six faces in order, filling the guide with one face each time. ' +
-      'Even, bright light works best. Afterwards, check the net against your cube and fix any sticker.'));
+    cam.appendChild(el('p', 'sc-note', 'Fill the guide with one face and hold it still: it is captured by itself. ' +
+      'The steps are a suggested order; any order and rotation works. Even, bright light works best. ' +
+      'Afterwards, check the net against your cube and fix any sticker.'));
 
     var camBtns = el('div', 'sc-btns');
     var startBtn = el('button', 'sc-main', 'Start camera');
@@ -202,18 +206,26 @@
     mirrorBox.checked = true;
     mirrorRow.appendChild(mirrorBox);
     mirrorRow.appendChild(document.createTextNode('Mirror the preview (like a mirror; does not change what is read)'));
+    var autoRow = el('label', 'sc-row');
+    var autoBox = el('input');
+    autoBox.type = 'checkbox';
+    autoBox.checked = true;
+    autoRow.appendChild(autoBox);
+    autoRow.appendChild(document.createTextNode('Auto-capture a face held still'));
     var camMsg = el('p', 'sc-note');
 
     cam.appendChild(stepsEl);
     cam.appendChild(instr);
     cam.appendChild(videoBox);
     cam.appendChild(mirrorRow);
+    cam.appendChild(autoRow);
     cam.appendChild(camBtns);
     cam.appendChild(camMsg);
 
     var captures = [null, null, null, null, null, null];
     var stepIdx = 0;
     var stream = null, tintTimer = 0, visible = false;
+    var auto = Scan.createAutoCapture(), autoDone = false, flashTimer = 0, lockTried = false;
     var canvas = el('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     Scan.STEPS.forEach(function (st, k) {
@@ -223,7 +235,7 @@
       chip.appendChild(mini);
       chip.appendChild(el('span', null, (k + 1) + '. ' + st.title));
       chip.title = 'Scan (or rescan) the ' + st.title.toLowerCase() + ' face';
-      chip.addEventListener('click', function () { stepIdx = k; renderCam(); });
+      chip.addEventListener('click', function () { stepIdx = k; autoDone = false; renderCam(); });
       chips.push({ el: chip, mini: mini });
       stepsEl.appendChild(chip);
     });
@@ -232,7 +244,7 @@
       var running = !!stream;
       startBtn.style.display = running ? 'none' : '';
       captureBtn.style.display = stopBtn.style.display = running ? '' : 'none';
-      videoBox.style.display = mirrorRow.style.display = running ? '' : 'none';
+      videoBox.style.display = mirrorRow.style.display = autoRow.style.display = running ? '' : 'none';
       video.classList.toggle('sc-mirror', mirrorBox.checked);
       chips.forEach(function (c, k) {
         c.el.classList.toggle('on', k === stepIdx);
@@ -269,13 +281,14 @@
       ctx.drawImage(video, 0, 0, w, h);
       var size = GUIDE * Math.min(w, h);
       var data = ctx.getImageData(0, 0, w, h).data;
-      return Scan.sampleGrid(data, w, h, (w - size) / 2, (h - size) / 2, size, 0.5);
+      return Scan.frameInfo(data, w, h, (w - size) / 2, (h - size) / 2, size);
     }
 
     function tint() {
       if (!stream) return;
-      var cellsRead = readFrame(320);
-      if (!cellsRead) return;
+      var info = readFrame(320);
+      if (!info) return;
+      var cellsRead = info.cells;
       guideCells.forEach(function (gcEl, k) {
         // The guide sits over the (maybe mirrored) preview: mirror the column to match what is shown.
         var r = Math.floor(k / 3), c = k % 3, src = r * 3 + (mirrorBox.checked ? 2 - c : c);
@@ -283,6 +296,31 @@
         gcEl.style.background = col + '66';
         gcEl.style.borderColor = col;
       });
+      if (!autoBox.checked || autoDone) { guide.classList.remove('sc-hold'); return; }
+      var others = captures.map(function (c, k) { return k === stepIdx ? null : c; });
+      var st = auto.feed(info, others);
+      guide.classList.toggle('sc-hold', st === 'holding');
+      if (st === 'capture') capture();
+    }
+
+    // Best effort: keep exposure and white balance where they are, so later faces read like the first.
+    function lockCamera() {
+      if (lockTried || !stream) return;
+      lockTried = true;
+      try {
+        var t = stream.getVideoTracks()[0];
+        if (!t || !t.getCapabilities) return;
+        var caps = t.getCapabilities() || {}, cur = t.getSettings() || {}, adv = {};
+        if ((caps.exposureMode || []).indexOf('manual') >= 0) {
+          adv.exposureMode = 'manual';
+          if (cur.exposureTime) adv.exposureTime = cur.exposureTime;
+        }
+        if ((caps.whiteBalanceMode || []).indexOf('manual') >= 0) {
+          adv.whiteBalanceMode = 'manual';
+          if (cur.colorTemperature) adv.colorTemperature = cur.colorTemperature;
+        }
+        if (Object.keys(adv).length) t.applyConstraints({ advanced: [adv] }).catch(function () {});
+      } catch (e) { /* not supported: readings already tolerate exposure changes */ }
     }
 
     function startCamera() {
@@ -318,6 +356,9 @@
     function stopCamera() {
       clearInterval(tintTimer);
       tintTimer = 0;
+      auto.reset();
+      lockTried = false;
+      guide.classList.remove('sc-hold');
       if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
       stream = null;
       video.srcObject = null;
@@ -327,11 +368,20 @@
     function capture() {
       var read = readFrame(640);
       if (!read) { camMsg.textContent = 'The camera has no picture yet; try again in a moment.'; return; }
-      captures[stepIdx] = read;
+      captures[stepIdx] = read.cells;
+      lockCamera();
+      guide.classList.remove('sc-hold');
+      guide.classList.add('sc-flash');
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(function () { guide.classList.remove('sc-flash'); }, 500);
       var missing = captures.indexOf(null);
       if (missing < 0) {
-        setNet(Scan.classify(Scan.readingsFromCaptures(captures)));
-        camMsg.textContent = 'All six faces scanned and the net is filled in. Check it against your cube, fix any sticker, then Load.';
+        var res = Scan.assemble(captures);
+        setNet(res.state);
+        camMsg.textContent = 'All six faces scanned and the net is filled in' +
+          (res.rearranged ? ' (the faces were out of the suggested order or turned, and were put in place)' : '') +
+          '. Check it against your cube, fix any sticker, then Load.';
+        autoDone = true;
         stepIdx = Math.min(stepIdx + 1, 5);
       } else {
         stepIdx = captures.indexOf(null, stepIdx) >= 0 ? captures.indexOf(null, stepIdx) : missing;
