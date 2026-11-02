@@ -22,6 +22,19 @@ Open items:
 - Don't push without being asked.
 - Known nit (left alone on purpose): after "Load onto cube", the timer panel still shows its previous scramble text.
 
+## Handoff: where the conversation stood (2026-11-02)
+
+The user moved to a cloud session so work continues with their PC off. The local transcript doesn't carry over; this section does.
+
+- **User feedback from real scanning:** red/orange kept getting mixed up, and yellow was often read as green. Root cause: matching used absolute brightness, and webcams expose dark (dim yellow is olive, which is nearer green; dim orange is nearer red). Fixed in f49c193 (`fullBright` in `src/scan.js`: readings are scaled to full brightness before matching, in both the live tint and `classify`), with two regression tests. **Not yet re-tested by the user on a real webcam.** If it still misreads, ask them to run `copy(JSON.stringify(rubiksApp.scanTab.captures()))` in the console after scanning and paste the result, so tests can use their real readings.
+- **Next feature under discussion: make scanning need as little user effort as possible.** Brainstorming had just started and nothing is agreed or built yet. Before building, write a spec section and get the user's approval. Ideas raised so far (Claude's, not yet confirmed by the user):
+  - auto-capture when a face is held steady in the guide (frame-to-frame stability plus nine distinct sticker-like cells), with no Capture button needed;
+  - auto-advance to the next step, and detect which face is shown from its centre colour (so order mistakes are caught or tolerated);
+  - lock camera exposure and white balance after the first capture (best-effort `applyConstraints`; not every camera supports it);
+  - possibly accept any face order and work out each face's position from centres and shared edges.
+- **AI vs algorithmic (discussed):** Claude recommended staying algorithmic. It's instant, offline, free and private, fits the static single-file page, and the cube's own rules (9 per colour, real pieces, solvable) catch most errors. A vision-LLM API would need a server or the user's key (GitHub Pages can't hide one), costs per scan, is slow, sends images to a third party, and can invent stickers. An in-browser trained model needs a custom model and adds MBs. AI might be worth it only to find the cube anywhere in the frame, if lining it up turns out to be the real pain. The user hasn't decided.
+- **Open question that was pending to the user:** "Thinking back to your last scan, which part felt like the most hassle?" Ask it again before designing.
+
 ## Layout
 
 `src/` holds the modules; `tools/build.js` inlines them into `rubiks-cube.html`.
