@@ -122,6 +122,43 @@ Acceptance for Feature 6:
 - In race mode, the cube becoming solved doesn't stop the timer; space does, and the entry is saved with its race mark and survives a reload; stats are unchanged by the ghost.
 - In a browser: scramble, Race with an 8 s target, release space: the digital cube solves in about 8 s, my timer keeps running after it, and pressing space shows both times and the winner.
 
+## Feature 7: Notation (added later, inside the Algorithms tab)
+"Add a tab in the Algorithms tab that goes over all notation, with clear visualization of each, like F, F', f, etc."
+- **Notation** is a choice next to All / F2L / OLL / PLL in the Algorithms tab filter. Choosing it shows notation cards instead of alg cards (and is remembered like the other filters).
+- A short intro in plain words: a letter alone is a clockwise quarter turn of that face, as seen looking straight at that face; `'` (prime) is counterclockwise; `2` is a half turn; lowercase, or `Rw`, turns two layers; slices turn the middle layer; x, y and z turn the whole cube.
+- One card per move family, in four groups:
+  - Face turns: U, D, L, R, F, B.
+  - Wide turns: u, d, l, r, f, b (each card says `Rw` means the same as `r`).
+  - Slices: M (follows L), E (follows D), S (follows F).
+  - Rotations: x (follows R), y (follows U), z (follows F).
+- Each card shows the name, a one-line description (for slices and rotations, which face it follows), buttons for its variants (X, X', X2), and a mini 3D cube that plays the selected variant in a loop from a solved cube (white top, green front).
+  - The cubies that don't move are dimmed, so the moving layer(s) stand out.
+  - A pink curved arrow around the turning layer shows the direction (two arrowheads for a half turn).
+  - The camera starts where the turning face is easy to see. Cards for moves that turn a face hidden from the default view say so ("Seen from behind", "Seen from below", "Seen from the left"). The mini cube can still be dragged.
+- **E and S** are added to `core.js`: E is the layer between U and D, turning like D; S is the layer between F and B, turning like F. Both take `'` and `2`, and the main cube can play them.
+- No new top-bar buttons.
+
+Acceptance for Feature 7:
+- E and S invert, E = U D' y', S = F' B z, and every existing test still passes (solver, animation mapping, scan validator).
+- For every notation card and variant, the mini cube's end state equals `Cube.applyMove(solved, move)`, its dimmed cubies are exactly the ones that don't move, and its arrow turns the same way as the move.
+- In a browser, the Notation cards show the highlighted layer and the arrow mid-animation (checked for B, M and x).
+
+## Feature 8: Custom keybinds (added later)
+"The user should be able to change keybinds to whatever they would like for digital solves."
+- **Actions:** every face turn U D L R F B, wide turn u d l r f b, slice M E S and rotation x y z, each as clockwise, prime and 2, plus "Toggle hints".
+- **Defaults** reproduce the Baseline keys exactly: the letter turns clockwise and Shift+letter is prime, for U D L R F B, M and X Y Z; Alt+face (with or without Shift) is the wide turn; H (with or without Shift) toggles hints. Everything else starts unbound.
+- **Binding:** any key, optionally with Shift and/or Alt. Several keys per action are allowed (for csTimer-style two-handed layouts). Letters are the letter printed on the key, as before; other keys are the physical key. Space and Escape are reserved for the timer and can't be bound. Binding a key that another action uses moves it to the new action and says so.
+- **Keys panel:** opened from a "Keys" control at the end of the bottom help line on the Cube tab (not a top-bar button; disabled while timing). It lists every action with its keys, each key with a remove button, an "Add key" button that waits for the next key press ("press a key to bind", Escape cancels), "Reset to defaults" and "Close". While the panel is open, key presses never move the cube or reach the timer, and Escape closes it.
+- The bottom help line is generated from the current bindings.
+- Bindings are saved in localStorage (wrapped in try/catch, like the timer). Missing or corrupt storage falls back to the defaults.
+- Baseline rules still hold: auto-repeat is ignored, moves queue as before, and Space never presses a button.
+
+Acceptance for Feature 8:
+- The default keymap gives the same move as the old key mapping for every letter with every Shift/Alt combination, and H toggles hints.
+- Rebinding, moving a key from another action, Space/Escape refused, several keys per action, and Shift/Alt handling are tested in Node.
+- Bindings survive serialise/parse; corrupt or invalid storage gives the defaults.
+- In a browser: rebinding U to J and U' to F makes J turn U and F turn U'; the bindings survive a reload; Space still runs the timer.
+
 ## Acceptance checklist
 - Baseline behaves exactly as described.
 - Any move sequence followed by its inverse returns the tracked sticker state to solved, including M, wide and half turns.

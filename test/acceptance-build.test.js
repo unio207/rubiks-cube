@@ -14,7 +14,7 @@ function check(name, ok, info) {
 }
 var root = path.join(__dirname, '..');
 var out = cp.execFileSync(process.execPath, [path.join(root, 'tools', 'build.js')], { encoding: 'utf8' });
-check('build ran', /inlined 10 file\(s\)/.test(out), out);
+check('build ran', /inlined 11 file\(s\)/.test(out), out);
 var html = fs.readFileSync(path.join(root, 'rubiks-cube.html'), 'utf8');
 
 var scripts = [], re = /<script([^>]*)>([\s\S]*?)<\/script>/g, m;
@@ -25,7 +25,7 @@ check('external script is cdnjs Three.js r128',
   ext[0] && /src="https:\/\/cdnjs\.cloudflare\.com\/ajax\/libs\/three\.js\/r128\/three\.min\.js"/.test(ext[0].attrs));
 check('no stylesheet links', !/<link[^>]+stylesheet/i.test(html));
 var inline = scripts.filter(function (s) { return !/\bsrc=/.test(s.attrs); });
-check('10 inline scripts', inline.length === 10, inline.length);
+check('11 inline scripts', inline.length === 11, inline.length);
 inline.forEach(function (s, i) {
   var ok = true; try { new Function(s.code); } catch (e) { ok = e.message; }
   check('inline script ' + i + ' parses', ok === true, ok);
@@ -95,6 +95,8 @@ check('sticker colors U white, D yellow, F green, B blue, R red, L orange',
 // Space never triggers a button
 var topBtns = html.match(/<button id="[^"]+"[^>]*>/g) || [];
 check('top-bar buttons tabindex=-1', topBtns.length === 7 && topBtns.every(function (b) { return /tabindex="-1"/.test(b); }), topBtns.join(' '));
+check('Keys control lives in the help line, unfocusable, and blurs like the top bar',
+  /keysBtn\.tabIndex = -1;/.test(appSrc) && /\$\('help'\)\.appendChild\(keysBtn\)/.test(appSrc) && /tabScan, keysBtn\]\.forEach/.test(appSrc));
 check('app blocks mousedown focus + blurs after click', /mousedown', function \(e\) \{ e\.preventDefault\(\); \}/.test(appSrc) && /b\.blur\(\)/.test(appSrc));
 check('app: Space keydown always preventDefault', /if \(isSpace\(e\)\) \{\s*e\.preventDefault\(\);/.test(appSrc));
 check('app: Space keyup always preventDefault', /if \(!isSpace\(e\)\) return;\s*e\.preventDefault\(\);/.test(appSrc));
@@ -104,7 +106,7 @@ check('app: notifySolved on any solved finished move', /if \(Cube\.isSolved\(sta
 check('app: inspection/hold/running updates the busy state', /onActiveChange: function \(active\) \{\s*timing = active;\s*updateBusy\(\);/.test(appSrc));
 check('app: timing or racing disables Scramble/Solve/Reset, Algorithms, Scan and Hints',
   /var busy = timing \|\| racing;\s*app\.setButtonsEnabled\(!busy\);\s*tabAlgs\.disabled = busy;\s*tabScan\.disabled = busy;\s*hintsBtn\.disabled = busy;/.test(appSrc));
-check('app: racing disables the cube keys', /app\.setKeysEnabled\(tab === 'cube' && !racing\)/.test(appSrc));
+check('app: racing disables the cube keys', /app\.setKeysEnabled\(tab === 'cube' && !racing && !keysPanel\.isOpen\(\)\)/.test(appSrc));
 check('app: first scramble applied after mount', /mounted = true;\s*applyTimerScramble\(ui\.timer\.scramble\);/.test(appSrc));
 check('app: Scramble/Solve/Reset and cube keys cancel a pending post-solve scramble', (appSrc.match(/cancelPendingScramble\(\)/g) || []).length >= 5);
 check('app: delayed scramble only applies when timer idle/stopped', /if \(timerIdle\(\)\) applyTimerScramble\(moves\)/.test(appSrc));

@@ -59,6 +59,24 @@ check('F: U->R', f1[C.faceletIndex([1, 1, 1], [1, 0, 0])] === 'U');
 var m1 = C.applyMove(S, 'M');
 check('M follows L: U->F', m1[C.faceletIndex([0, 0, 1], [0, 0, 1])] === 'U');
 
+// 3b. E and S slices (Feature 7): E follows D, S follows F.
+['E', "E'", 'E2', 'S', "S'", 'S2'].forEach(function (m) {
+  check(m + ' then inverse (from scrambled)', C.isEqual(C.applyAlg(scr, [m, C.invertMove(m)]), scr));
+  check(m + ' parses', C.parseMove(m).name === m);
+});
+check("E = U D' y'", C.isEqual(C.applyMove(scr, 'E'), C.applyAlg(scr, "U D' y'")));
+check("E' = U' D y", C.isEqual(C.applyMove(scr, "E'"), C.applyAlg(scr, "U' D y")));
+check('S = F\' B z', C.isEqual(C.applyMove(scr, 'S'), C.applyAlg(scr, "F' B z")));
+check("S2 = F2 B2 z2", C.isEqual(C.applyMove(scr, 'S2'), C.applyAlg(scr, 'F2 B2 z2')));
+var me = C.parseMove('E'), ms = C.parseMove("S'");
+check('E meta', me.axis === 'y' && me.layers.join() === '0' && me.amount === 1);
+check("S' meta", ms.axis === 'z' && ms.layers.join() === '0' && ms.amount === 1);
+var e1 = C.applyMove(S, 'E');
+check('E follows D: F->R', e1[C.faceletIndex([1, 0, 0], [1, 0, 0])] === 'F');
+var s1 = C.applyMove(S, 'S');
+check('S follows F: U->R', s1[C.faceletIndex([1, 0, 0], [1, 0, 0])] === 'U');
+check('E and S keep corners', [0, 2, 6, 8].every(function (i) { return C.applyAlg(S, 'E S')[i] === 'U'; }));
+
 // 4. Rotations keep isSolved true and move centers.
 ['x', 'y', 'z', "x'", 'y2', "z'", "x y z' x2"].forEach(function (a) {
   check('isSolved after ' + a, C.isSolved(C.applyAlg(S, a)));
