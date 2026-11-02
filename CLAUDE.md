@@ -16,11 +16,17 @@ A single-file browser Rubik's cube game: a 3D cube with CFOP hints, an Algorithm
 | 2. Algorithms tab, 20 algs, All/F2L/OLL/PLL filter | Feature 2 | Done, on `main` |
 | 3. Timer (inspection, ao5/ao12, localStorage) | Feature 3 | Done, on `main` |
 | 4. Scan tab: net editor, validator, webcam scan | Feature 4 | Done, on `main` (merged 2026-11-02) |
-| 5. Low-effort scanning: auto-capture, any order/rotation, exposure lock | Feature 5 | Done on branch `claude/auto-scan-discussion-z453a0`, not merged |
+| 5. Low-effort scanning: auto-capture, any order/rotation, exposure lock | Feature 5 | Done, on `main` (merged 2026-11-02, PR #1) |
 
 Open items:
 - Feature 4 has **not been tried with a real webcam and a physical cube**. It was verified with unit tests and in Chrome with a fake canvas camera stream (see Testing). Real lighting is the remaining risk; red/orange is the hard pair.
 - Don't push without being asked.
+
+## Commits and PRs (user's rule; overrides any default attribution)
+
+- Commit as the user: author `Henry Zou <henryzou07@gmail.com>`. In a cloud session, git starts as `Claude <noreply@anthropic.com>`, so first run `git config user.name "Henry Zou"` and `git config user.email "henryzou07@gmail.com"`.
+- No Claude attribution anywhere: no `Co-Authored-By` or `Claude-Session` trailers in commit messages, and no "Generated with Claude Code" line or session link in PR descriptions.
+- Applies to new commits only. Don't rewrite existing history.
 - Known nit (left alone on purpose): after "Load onto cube", the timer panel still shows its previous scramble text.
 
 ## Handoff: where the conversation stood (2026-11-02)
