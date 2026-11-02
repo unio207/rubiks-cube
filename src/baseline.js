@@ -54,6 +54,7 @@
   //   onMove(move, state)        after each completed move (any source)
   //   onSolvedChange(solved)     when "solved and idle" changes
   //   solve()                    replaces what the Solve button plays
+  //   resolveKey(event)          move name for a keydown, or null (default: keyToMove; app.js uses KeyMap)
   function init(opts) {
     var hooks = { onMove: opts.onMove || null, onSolvedChange: opts.onSolvedChange || null, solve: opts.solve || null };
     var view = root.CubeView.createCubeView(opts.container, opts.view || {});
@@ -75,15 +76,15 @@
       updateSolved();
     };
 
-    // Queue moves (names, objects, alg string or array). o.fast plays them quickly.
-    // o.record === false skips the solve history (default records).
+    // Queue moves (names, objects, alg string or array). o.fast plays them quickly;
+    // o.duration sets ms per turn. o.record === false skips the solve history (default records).
     function applyMoves(moves, o) {
       o = o || {};
       var list = Cube.parseAlg(typeof moves === 'object' && !Array.isArray(moves) ? [moves] : moves);
       if (!list.length) return;
       if (o.record !== false) list.forEach(function (m) { history.push(m); });
       else history.reset(Cube.applyAlg(history.state, list));
-      view.enqueue(list, { fast: !!o.fast });
+      view.enqueue(list, { fast: !!o.fast, duration: o.duration });
       updateSolved();
     }
 
@@ -109,7 +110,7 @@
       if (!keysEnabled || e.repeat || e.ctrlKey || e.metaKey) return;
       var t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      var move = keyToMove(eventKey(e), e.shiftKey, e.altKey);
+      var move = opts.resolveKey ? opts.resolveKey(e) : keyToMove(eventKey(e), e.shiftKey, e.altKey);
       if (!move) return;
       e.preventDefault();
       applyMoves(move);

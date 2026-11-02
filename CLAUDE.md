@@ -1,6 +1,6 @@
 # Rubik's cube game
 
-A single-file browser Rubik's cube game: a 3D cube with CFOP hints, an Algorithms tab, a csTimer-style timer and a Scan tab (hand-entered or webcam-scanned real cube). It's published on GitHub Pages from `main` (`index.html` redirects to `rubiks-cube.html`). Remote: github.com/unio207/rubiks-cube.
+A single-file browser Rubik's cube game: a 3D cube with CFOP hints, an Algorithms tab, a csTimer-style timer (with a Race mode against a ghost solve) and a Scan tab (hand-entered or webcam-scanned real cube). It's published on GitHub Pages from `main` (`index.html` redirects to `rubiks-cube.html`). Remote: github.com/unio207/rubiks-cube.
 
 - **Requirements:** `spec.md`, the source of truth for behaviour. New features get a spec section *before* they are built. The user's rules live there too: no unsolicited features, make implementation choices yourself, keep reports concise.
 - **core.js API:** `src/CONTRACT.md` (state format, facelet indexing, move notation).
@@ -16,6 +16,10 @@ A single-file browser Rubik's cube game: a 3D cube with CFOP hints, an Algorithm
 | 2. Algorithms tab, 20 algs, All/F2L/OLL/PLL filter | Feature 2 | Done, on `main` |
 | 3. Timer (inspection, ao5/ao12, localStorage) | Feature 3 | Done, on `main` |
 | 4. Scan tab: net editor, validator, webcam scan | Feature 4 | Done, on `main` (merged 2026-11-02) |
+| 5. Low-effort scanning: auto-capture, any order/rotation, exposure lock | Feature 5 | Done on branch `claude/auto-scan-discussion-z453a0`, not merged |
+| 6. Race: the digital cube solves itself at a human CFOP pace (set target or PB) while you solve a real one | Feature 6 | Done on branch `claude/race-notation-keybinds`, not merged |
+| 7. Notation cards in the Algorithms tab (E and S added to core) | Feature 7 | Done on branch `claude/race-notation-keybinds`, not merged |
+| 8. Custom keybinds (Keys panel from the help line, `src/keymap.js`) | Feature 8 | Done on branch `claude/race-notation-keybinds`, not merged |
 | 5. Low-effort scanning: auto-capture, any order/rotation, exposure lock | Feature 5 | Done, on `main` (merged 2026-11-02, PR #1) |
 
 Open items:
@@ -48,10 +52,15 @@ The user moved to a cloud session so work continues with their PC off. The local
 | `src/solver.js` | CFOP hints + `solve()`. Inlined as `type="text/plain"` and run in a Web Worker built from the core + solver text | worker, Node |
 | `src/view3d.js` | Three.js r128 renderer (`CubeView`) | page |
 | `src/baseline.js` | Main cube controller: keys, buttons, history | page |
+| `src/timer.js` | Timer logic + panel (incl. the Race checkbox, target row and result line) | page, Node (logic) |
+| `src/race.js` | Feature 6 logic: ghost pacing `schedule`, `bestSingle` (PB), `target`, race settings storage, `result` | page, Node |
+| `src/algtab.js` | Algorithms tab, incl. Notation cards (`NOTATION`, `arrowPath`) | page, Node (diagrams) |
+| `src/scan.js` | Feature 4 logic: `validate`, `STEPS` (capture-to-facelet mapping), `classify`, `sampleGrid` | page, Node |
 | `src/timer.js` | Timer logic + panel | page, Node (logic) |
 | `src/algtab.js` | Algorithms tab | page, Node (diagrams) |
 | `src/scan.js` | Feature 4/5 logic: `validate`, `STEPS` (capture-to-facelet mapping, named by centre colour), `classify`, `assemble`, `slotFor`, `frameInfo`, `createAutoCapture` | page, Node |
 | `src/scanui.js` | Scan tab UI (`ScanTab.mount`) | page |
+| `src/keymap.js` | Feature 8: keymap logic (`defaults`, `fromEvent`, `lookup`, `bind`, `parse`, `helpText`) + Keys panel | page, Node (logic) |
 | `src/app.js` | Wires it all together; tabs; loaded last | page |
 
 ## Build and test
@@ -60,7 +69,7 @@ The user moved to a cloud session so work continues with their PC off. The local
 - There's no package.json. Run every test with:
   `for f in test/*.js; do node $f 2>&1 | tail -1; done`
   Each file prints `N passed, 0 failed`. About 10,000 checks in total. `acceptance-build` also rebuilds the page.
-- `test/acceptance-build.test.js` asserts the inlined module count (9) and the top-bar button count (7). Update both when adding a module or a button.
+- `test/acceptance-build.test.js` asserts the inlined module count (10) and the top-bar button count (7). Update both when adding a module or a button.
 - Tests use seeded RNGs, so failures are reproducible.
 
 ## Gotchas

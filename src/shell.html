@@ -21,6 +21,9 @@
   .tabs button.active { background: #3d7bdc !important; border-color: #3d7bdc !important; color: #fff; }
   #solved { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); color: #3ddc84; font-size: 22px; font-weight: 600; z-index: 1; pointer-events: none; }
   #help { position: fixed; bottom: 12px; left: 0; right: 0; text-align: center; color: #8a909c; padding: 0 16px; z-index: 1; pointer-events: none; }
+  #keysBtn { pointer-events: auto; background: #2a2e37; color: #ddd; border: 1px solid #444a56; border-radius: 5px; padding: 1px 9px; font: inherit; cursor: pointer; }
+  #keysBtn:hover:not(:disabled) { background: #353a45; }
+  #keysBtn:disabled { opacity: 0.4; cursor: default; }
   .panel { position: fixed; top: 60px; background: rgba(30, 33, 40, 0.92); border: 1px solid #2f343e; border-radius: 10px; padding: 12px 14px; z-index: 2; box-sizing: border-box; }
   #hints { left: 12px; width: 300px; max-width: calc(100vw - 24px); }
   #hints .stage { font-weight: 600; font-size: 15px; }
@@ -67,9 +70,11 @@
 <!-- INLINE:src/view3d.js -->
 <!-- INLINE:src/baseline.js -->
 <!-- INLINE:src/timer.js -->
+<!-- INLINE:src/race.js -->
 <!-- INLINE:src/algtab.js -->
 <!-- INLINE:src/scan.js -->
 <!-- INLINE:src/scanui.js -->
+<!-- INLINE:src/keymap.js -->
 <!-- INLINE:src/app.js -->
 </body>
 </html>

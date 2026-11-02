@@ -69,6 +69,8 @@
     F: { axis: 'z', layers: [1], dir: -1 },
     B: { axis: 'z', layers: [-1], dir: 1 },
     M: { axis: 'x', layers: [0], dir: 1 },
+    E: { axis: 'y', layers: [0], dir: 1 },
+    S: { axis: 'z', layers: [0], dir: -1 },
     x: { axis: 'x', layers: ALL, dir: -1 },
     y: { axis: 'y', layers: ALL, dir: -1 },
     z: { axis: 'z', layers: ALL, dir: -1 },
@@ -104,7 +106,7 @@
   // Parse one move token ("R", "R'", "R2", "R2'" = "R2") or pass a move object through.
   function parseMove(tok) {
     if (typeof tok === 'object' && tok) return makeMove(tok.base, tok.turns);
-    var mt = /^([UDLRFBMxyzrlufdb])(2?)('?)$/.exec(String(tok).trim());
+    var mt = /^([UDLRFBMESxyzrlufdb])(2?)('?)$/.exec(String(tok).trim());
     if (!mt) throw new Error('Bad move: ' + tok);
     return makeMove(mt[1], mt[2] ? 2 : mt[3] ? -1 : 1);
   }
