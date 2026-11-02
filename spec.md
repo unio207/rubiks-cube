@@ -162,6 +162,44 @@ Acceptance for Feature 8:
 - Bindings survive serialise/parse; corrupt or invalid storage gives the defaults.
 - In a browser: rebinding U to J and U' to F makes J turn U and F turn U'; the bindings survive a reload; Space still runs the timer.
 
+## Roadmap: camera move tracking (planned, not built)
+Goal: the app follows a real solve through the webcam, with no smart cube, so the digital cube, hints, splits and stats keep up with the real cube. This section is a plan, not a feature. Each milestone gets its own Feature section, with firm acceptance numbers, and my approval before it's built. Milestones are in order, and each one is usable on its own.
+
+**Approach: predict, then verify.** The app knows far more than a camera sees, so it uses that knowledge instead of reading the cube from scratch:
+- The starting state is known, from a scramble or a scan, and so is the end of a solve (solved).
+- The scan doubles as colour calibration: stickers are matched to this cube's own colours under this light, not to a generic palette.
+- When the app knows the next move (algorithm trainer, hints), the camera only confirms it.
+- Each guess is a real cube state, reached by legal moves. Common CFOP patterns (triggers, the Feature 2 algs) count as more likely.
+- Moves come mainly from motion (which layer moved, and which way), which needs no colours. Sticker colours are read only when the cube is still and the layers line up, as a check.
+- Several move histories are kept at once and scored against what the camera sees. The best one wins.
+
+**Camera setup.** The camera is in front of the cube and a little above it, so the top and front faces are visible and the left and right faces aren't. Every face turn, including B, D and L, changes some of those 18 stickers, and the front face is never ambiguous. Bright, even light and a short exposure keep fast turns sharp. An outline on the video shows where to hold the cube.
+
+**Milestones**
+1. **Real-world baseline.** Try the existing scanner (Features 4 and 5) on a real webcam and fix what fails. Add a way to record short clips together with the true moves, for testing. The best source of true moves is a Bluetooth smart cube, used only for recording; otherwise label the moves by hand. Clips stay on my computer.
+2. **Read the angled view.** With the cube held in the outline, read the 18 top and front stickers from one frame, using the calibrated colours. Detect "still and aligned" frames.
+3. **Algorithm trainer check.** In the Algorithms tab, I do an alg on the real cube and the camera confirms each move as it happens, marking it on the card. The app knows every move in advance.
+4. **Follow along with hints.** The hint's next move is the expected move. When the cube goes still, the app decides between: the expected move, its reverse, no move, or something else. On the expected move, the digital cube plays it and the hint advances. On something else, it says so and asks me to re-sync: hold still and show the top and front, which settles the state from a short search near the expected one.
+5. **Reconstruction after a solve.** During a timed solve the video is kept in memory. Afterwards it's decoded using the known start state, the solved end and every frame. The result is the move list with CFOP splits, turns per second and the OLL/PLL cases, built from the existing stage checks and algs. Failed or uncertain stretches are marked, not guessed silently.
+6. **Live tracking.** Moves are tracked during a free solve and shown about half a second behind, so each move can be confirmed by what follows. Hand tracking (for example MediaPipe Hands) marks the stickers fingers cover as unseen and helps recognise finger tricks. Hands resting flat can start and stop the timer.
+7. **Optional: find the cube anywhere.** A small trained model finds the cube at any angle, without the outline. It's trained on images rendered from the app's own 3D cube (random angles, lighting, backgrounds, hands), then checked on real clips.
+
+**Ideas to try along the way (unproven):** count turns from the click sounds of a magnetic cube, so the search knows how many moves happened between two still frames. Use a small mirror to show a third face. Use a phone as a second camera.
+
+**Measuring.** Every milestone is tested by replaying recorded clips (or the sticker readings taken from them) in Node, against the true moves. The measures are:
+- the share of moves correct (edit distance to the true sequence);
+- the share of solves reconstructed with no errors;
+- how often a re-sync was needed;
+- delay (live milestones only).
+
+Provisional targets, to be confirmed in each milestone's section:
+- milestones 3–4: at least 98% of moves right at a normal practice pace;
+- milestone 5: at least 90% of solves fully right at up to about 4 turns per second.
+
+Full speedsolving speed (8+ turns per second) is not promised.
+
+**Rules that would change.** From milestones 6–7 on, the single-file, no-extra-libraries rule would have to allow a hand-tracking library and model files hosted with the page. That needs my approval when it's reached. Video is processed in the browser only and never uploaded.
+
 ## Acceptance checklist
 - Baseline behaves exactly as described.
 - Any move sequence followed by its inverse returns the tracked sticker state to solved, including M, wide and half turns.
