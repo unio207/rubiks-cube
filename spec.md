@@ -12,11 +12,11 @@ Out: anything not listed here. No unsolicited features.
 ## Baseline (rebuild exactly)
 Full-window 3D cube on a dark background, keyboard controlled, with Scramble/Solve/Reset buttons at the top left.
 - 27 cubies: near-black bodies with colored stickers inset on the outward faces. Colors: U white, D yellow, F green, B blue, R red, L orange.
-- Perspective camera orbits the cube. Dragging (mouse or touch) rotates the view, and the vertical angle is clamped so it never flips. Ambient light plus a directional light that follows the camera. Resizes with the window.
+- Perspective camera orbits the cube. Dragging (mouse or touch) rotates the view, and the vertical angle is clamped so it never flips. Ambient light plus a directional light that follows the camera. Resizes with the window. *(Added later:)* the mouse wheel and a two-finger pinch zoom the view.
 - Keys: U D L R F B turn that face 90° clockwise (as seen looking at that face). X Y Z rotate the whole cube (X follows R, Y follows U, Z follows F). Shift + key reverses the turn. Held-key auto-repeat is ignored.
 - Turns animate over about 160 ms with ease in-out. Keypresses queue and play in order. After a whole-cube rotation, face keys refer to whatever face is now in that position. Snap positions and rotations to exact values after each turn so drift never builds up.
 - Scramble: 25 random quarter turns, never the same face twice in a row, animated fast.
-- Solve: plays back the inverse of every move since the cube was last solved, in reverse order. It is not a real solver. A move followed by its inverse cancels out of the history.
+- Solve: *(changed later)* plays a short CFOP solution from the hint solver (`Solver.solve`), so it works from any state, including a scanned cube. If the cube changes before the solution arrives, it is dropped. *(Original baseline: play back the inverse of every move since the cube was last solved, with a move and its inverse cancelling out of the history. The history is still tracked by `Baseline.createHistory`.)*
 - Reset: instantly restores a solved cube and clears the queue and history.
 - A green "Solved" label shows whenever the cube is solved and idle, in any orientation.
 - Bottom help line lists the keys and "drag to rotate the view".

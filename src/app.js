@@ -1,5 +1,5 @@
 // app.js - wires the page together: baseline cube, CFOP hint panel (solver in a Web Worker),
-// timer, and the Cube | Algorithms tabs. Browser only; loaded last.
+// timer, and the Cube | Algorithms | Scan tabs. Browser only; loaded last.
 (function () {
   'use strict';
 
