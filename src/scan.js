@@ -265,9 +265,18 @@
   var PALETTE_LAB = {};
   COLOR_LETTERS.forEach(function (c) { PALETTE_LAB[c] = toLab(PALETTE[c]); });
 
+  // Webcams often expose dark, and auto-exposure changes from one capture to the next. A sticker's
+  // channel ratios survive exposure but its brightness doesn't (dark yellow is olive, which is nearer
+  // green; dark orange is nearer red), so readings are scaled to full brightness before matching.
+  function fullBright(rgb) {
+    var m = Math.max(rgb[0], rgb[1], rgb[2]);
+    if (m < 8) return rgb;   // black: nothing to scale
+    return rgb.map(function (v) { return v * 255 / m; });
+  }
+
   // Nearest palette colour for a single reading (used for the live tint over the video).
   function nearestColor(rgb) {
-    var lab = toLab(rgb), best = null, bd = Infinity;
+    var lab = toLab(fullBright(rgb)), best = null, bd = Infinity;
     COLOR_LETTERS.forEach(function (c) { var d = dist(lab, PALETTE_LAB[c]); if (d < bd) { bd = d; best = c; } });
     return best;
   }
@@ -296,7 +305,7 @@
   //    colours best match the centre readings. 2. Each sticker goes to the centre it is closest to,
   //    greedily from the closest pairs, with exactly 9 stickers per colour.
   function classify(readings) {
-    var labs = balance(readings).map(toLab);
+    var labs = balance(readings.map(fullBright)).map(toLab);
     var centerLab = CENTERS.map(function (i) { return labs[i]; });
     var bestO = null, bestCost = Infinity;
     ORIENTATIONS.forEach(function (o) {

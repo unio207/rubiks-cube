@@ -130,6 +130,38 @@ Object.keys(LIGHTS).forEach(function (name) {
   console.log('classify ' + name + ': ' + ok + '/' + N + ' exact');
   check('classify ' + name + ' recovers every state', ok === N, ok + '/' + N);
 });
+// Webcams often expose dark, and auto-exposure changes between captures. Reading must not depend on
+// brightness: dark yellow is olive (looked green), dark orange looked red.
+var CASTS = { neutral: [1, 1, 1], warm: [1.08, 0.95, 0.72], greenish: [0.9, 1.05, 0.85], cool: [0.85, 0.97, 1.12] };
+var tintMiss = [];
+[1, 0.8, 0.65, 0.5, 0.4, 0.3].forEach(function (k) {
+  Object.keys(CASTS).forEach(function (n) {
+    Object.keys(TRUE).forEach(function (c) {
+      var got = S.nearestColor(TRUE[c].map(function (v, j) { return clamp(v * k * CASTS[n][j]); }));
+      if (got !== c) tintMiss.push(c + '->' + got + ' @' + k + ' ' + n);
+    });
+  });
+});
+check('live tint reads every colour at any exposure (0.3-1) and cast', tintMiss.length === 0, tintMiss);
+(function () {
+  var ok = 0, N = 200, conf = {};
+  for (var k = 0; k < N; k++) {
+    var st = C.applyAlg(randomState(30), pick(S.ORIENTATIONS).alg);
+    var exp = S.STEPS.map(function () { return 0.35 + rnd() * 0.65; });   // each capture exposed differently
+    var faceOf = {};
+    S.STEPS.forEach(function (sp, j) { sp.cells.forEach(function (f) { faceOf[f] = j; }); });
+    var reads = st.map(function (c, i) {
+      var e = exp[faceOf[i]] * (1 - rnd() * 0.1);
+      return TRUE[c].map(function (v) { return clamp(v * e + (rnd() - 0.5) * 16); });
+    });
+    var got = S.classify(reads);
+    if (C.isEqual(got, st)) ok++;
+    else st.forEach(function (c, i) { if (got[i] !== c) conf[c + '->' + got[i]] = (conf[c + '->' + got[i]] || 0) + 1; });
+  }
+  console.log('classify per-face exposure 0.35-1: ' + ok + '/' + N + ' exact ' + JSON.stringify(conf));
+  check('classify survives a different exposure on every capture', ok === N, ok + '/' + N);
+})();
+
 // Readings put through the capture steps land back on the right facelets.
 var stc = randomState(30);
 var reads = camera(stc, LIGHTS.neutral);
