@@ -189,39 +189,53 @@ check('nearestColor', S.nearestColor([240, 100, 20]) === 'L' && S.nearestColor([
 })();
 
 
-// 7. Feature 5: captures in any order and rotation give the same state as the guided order.
+// 7. Feature 5: captures in any order and rotation give the same state as holds as instructed,
+// always with white on top and green in front.
 (function () {
   var QT = [6, 3, 0, 7, 4, 1, 8, 5, 2];
   function turn(cap, q) { for (var i = 0; i < q; i++) cap = QT.map(function (k) { return cap[k]; }); return cap; }
+  function std(st) { return S.normalize(st).state; }
   var okG = 0, okA = 0, flagged = 0, N = 60, t0 = Date.now();
   for (var k = 0; k < N; k++) {
     var st = C.applyAlg(randomState(30), pick(S.ORIENTATIONS).alg);
     var reads = camera(st, pick([LIGHTS.neutral, LIGHTS.dim, LIGHTS.warm, LIGHTS.cool]));
     var caps = S.STEPS.map(function (sp) { return sp.cells.map(function (f) { return reads[f]; }); });
     var g = S.assemble(caps);
-    if (C.isEqual(g.state, st) && !g.rearranged) okG++;
-    // Shuffle steps 2-6 and turn every picture (step 1 too); step 1 stays first.
-    var order = [1, 2, 3, 4, 5].sort(function () { return rnd() - 0.5; });
-    var q0 = Math.floor(rnd() * 4);
-    var mixed = [turn(caps[0], q0)].concat(order.map(function (j) { return turn(caps[j], Math.floor(rnd() * 4)); }));
+    if (C.isEqual(g.state, std(st)) && !g.rearranged) okG++;
+    // Captures land on the wrong steps and every picture is turned.
+    var order = [0, 1, 2, 3, 4, 5].sort(function () { return rnd() - 0.5; });
+    var qs = order.map(function () { return Math.floor(rnd() * 4); });
+    var mixed = order.map(function (j, i) { return turn(caps[j], qs[i]); });
     var a = S.assemble(mixed);
-    // Expected: the guided state, then turned so the top of step 1's (turned) picture is up: a
-    // quarter turn of the picture is a z-rotation of the whole cube.
-    var want = st;
-    for (var i = 0; i < q0; i++) want = C.applyAlg(want, ['z']);
-    if (C.isEqual(a.state, want)) okA++;
-    if (a.rearranged || q0 === 0 && order.join() === '1,2,3,4,5') flagged++;
+    if (C.isEqual(a.state, std(st))) okA++;
+    var same = order.join() === '0,1,2,3,4,5' && qs.every(function (q) { return q === 0; });
+    if (a.rearranged !== same) flagged++;
   }
-  console.log('assemble: guided ' + okG + '/' + N + ', any order ' + okA + '/' + N + ' (' + (Date.now() - t0) + ' ms)');
-  check('assemble keeps the guided result', okG === N, okG);
+  console.log('assemble: as held ' + okG + '/' + N + ', any order ' + okA + '/' + N + ' (' + (Date.now() - t0) + ' ms)');
+  check('assemble keeps captures held as instructed', okG === N, okG);
   check('assemble recovers any order and rotation', okA === N, okA);
-  check('assemble says when faces were rearranged', flagged === N, flagged);
+  check('assemble says when faces were put right', flagged === N, flagged);
   // A partly solved cube (F2L done: whole D face yellow, in the CFOP hold) also assembles.
   var mid = C.applyAlg(C.solvedCfop(), "R U R' U R U2 R' U2 F R U R' U' F'");
   var mr = camera(mid, LIGHTS.neutral);
   var mc = S.STEPS.map(function (sp) { return sp.cells.map(function (f) { return mr[f]; }); });
   var mixedMid = [mc[0], turn(mc[5], 1), mc[2], turn(mc[4], 3), mc[1], turn(mc[3], 2)];
-  check('mid-solve cube assembles in any order', C.isEqual(S.assemble(mixedMid).state, mid));
+  check('mid-solve cube assembles in any order', C.isEqual(S.assemble(mixedMid).state, std(mid)));
+
+  // Steps are named by centre colour, and a capture goes to the step of its centre colour.
+  check('steps named by centre colour', S.STEPS.map(function (sp) { return sp.title; }).join() === 'Green,Red,Blue,Orange,White,Yellow' &&
+    S.STEPS.every(function (sp) { return sp.title.toLowerCase() === C.COLOR_NAME[sp.face]; }));
+  var all = [0, 1, 2, 3, 4, 5], miss = [];
+  [1, 0.6, 0.4].forEach(function (e) {
+    Object.keys(CASTS).forEach(function (n) {
+      S.STEPS.forEach(function (sp, k) {
+        var rgb = TRUE[sp.face].map(function (v, j) { return clamp(v * e * CASTS[n][j]); });
+        if (S.slotFor(rgb, all) !== k) miss.push(sp.title + ' @' + e + ' ' + n);
+      });
+    });
+  });
+  check('slotFor picks the step of the centre colour', miss.length === 0, miss);
+  check('slotFor picks among allowed steps only', S.slotFor(TRUE.R, [2, 3, 5]) === 3);   // red read, red step full: orange
 })();
 
 // 8. Feature 5: frameInfo and the auto-capture state machine.

@@ -180,8 +180,8 @@
     cam.style.maxWidth = '640px';
     wrap.appendChild(cam);
     cam.appendChild(el('h2', null, 'Scan with camera'));
-    cam.appendChild(el('p', 'sc-note', 'Fill the guide with one face and hold it still: it is captured by itself. ' +
-      'The steps are a suggested order; any order and rotation works. Even, bright light works best. ' +
+    cam.appendChild(el('p', 'sc-note', 'Fill the guide with one face and hold it still: it is captured by itself and ' +
+      'goes to the step of its centre colour, so any order works. Even, bright light works best. ' +
       'Afterwards, check the net against your cube and fix any sticker.'));
 
     var camBtns = el('div', 'sc-btns');
@@ -192,6 +192,7 @@
 
     var stepsEl = el('div', 'sc-steps'), chips = [];
     var instr = el('p', 'sc-instr');
+    var seenEl = el('p', 'sc-row');
     var videoBox = el('div', 'sc-video');
     var video = el('video');
     video.setAttribute('playsinline', '');
@@ -216,6 +217,7 @@
 
     cam.appendChild(stepsEl);
     cam.appendChild(instr);
+    cam.appendChild(seenEl);
     cam.appendChild(videoBox);
     cam.appendChild(mirrorRow);
     cam.appendChild(autoRow);
@@ -234,7 +236,7 @@
       for (var j = 0; j < 9; j++) mini.appendChild(el('i'));
       chip.appendChild(mini);
       chip.appendChild(el('span', null, (k + 1) + '. ' + st.title));
-      chip.title = 'Scan (or rescan) the ' + st.title.toLowerCase() + ' face';
+      chip.title = 'Scan (or rescan) the face with the ' + st.title.toLowerCase() + ' centre';
       chip.addEventListener('click', function () { stepIdx = k; autoDone = false; renderCam(); });
       chips.push({ el: chip, mini: mini });
       stepsEl.appendChild(chip);
@@ -247,15 +249,17 @@
       videoBox.style.display = mirrorRow.style.display = autoRow.style.display = running ? '' : 'none';
       video.classList.toggle('sc-mirror', mirrorBox.checked);
       chips.forEach(function (c, k) {
+        var st = Scan.STEPS[k];
         c.el.classList.toggle('on', k === stepIdx);
         var cap = captures[k];
         Array.prototype.forEach.call(c.mini.children, function (dot, j) {
-          dot.style.background = cap ? hex(Scan.nearestColor(cap[j])) : GRAY;
+          dot.style.background = cap ? hex(Scan.nearestColor(cap[j])) : j === 4 ? hex(st.face) : GRAY;
         });
       });
       var st = Scan.STEPS[stepIdx];
       instr.textContent = '';
-      instr.appendChild(el('b', null, 'Step ' + (stepIdx + 1) + ' of 6, ' + st.title + ': '));
+      instr.appendChild(el('b', null, 'Step ' + (stepIdx + 1) + ' of 6: '));
+      seenEl.style.display = running ? '' : 'none';
       instr.appendChild(document.createTextNode(st.text));
       placeGuide();
     }
@@ -296,6 +300,11 @@
         gcEl.style.background = col + '66';
         gcEl.style.borderColor = col;
       });
+      var kinds = {};
+      cellsRead.forEach(function (c) { kinds[Scan.nearestColor(c)] = true; });
+      var even = info.even.every(function (e) { return e >= 0.7; }) && (Object.keys(kinds).length > 1 || info.gaps >= 9);
+      seenEl.textContent = !even ? 'Camera sees: no face in the guide yet' : 'Camera sees: ' + Cube.COLOR_NAME[Scan.nearestColor(cellsRead[4])] + ' centre' +
+        (captures.some(function (c) { return c && Scan.sameFace(cellsRead, c); }) ? ' (already scanned)' : '');
       if (!autoBox.checked || autoDone) { guide.classList.remove('sc-hold'); return; }
       var others = captures.map(function (c, k) { return k === stepIdx ? null : c; });
       var st = auto.feed(info, others);
@@ -365,10 +374,19 @@
       renderCam();
     }
 
+    // Steps a capture may fill: the unscanned ones and the selected one; when all are full, any.
+    function allowedSlots() {
+      var out = [];
+      captures.forEach(function (c, k) { if (!c || k === stepIdx) out.push(k); });
+      return out.length > 1 || captures.indexOf(null) >= 0 ? out : [0, 1, 2, 3, 4, 5];
+    }
+
     function capture() {
       var read = readFrame(640);
       if (!read) { camMsg.textContent = 'The camera has no picture yet; try again in a moment.'; return; }
-      captures[stepIdx] = read.cells;
+      var slot = Scan.slotFor(read.cells[4], allowedSlots());
+      captures[slot] = read.cells;
+      stepIdx = slot;
       lockCamera();
       guide.classList.remove('sc-hold');
       guide.classList.add('sc-flash');
@@ -379,10 +397,9 @@
         var res = Scan.assemble(captures);
         setNet(res.state);
         camMsg.textContent = 'All six faces scanned and the net is filled in' +
-          (res.rearranged ? ' (the faces were out of the suggested order or turned, and were put in place)' : '') +
+          (res.rearranged ? ' (some faces were turned or misread and were put right)' : '') +
           '. Check it against your cube, fix any sticker, then Load.';
         autoDone = true;
-        stepIdx = Math.min(stepIdx + 1, 5);
       } else {
         stepIdx = captures.indexOf(null, stepIdx) >= 0 ? captures.indexOf(null, stepIdx) : missing;
         camMsg.textContent = '';
