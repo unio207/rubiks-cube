@@ -96,14 +96,17 @@ Acceptance for Feature 4:
 Scanning should need as few clicks and as little care as possible. Builds on Feature 4's webcam scan.
 - **Auto-capture.** On by default (an "Auto-capture" checkbox turns it off). A face is captured automatically once it has been held steady in the guide for about 0.75 s. It counts as a face when every cell is one even colour and either the cells show at least two colours or dark gaps separate the cells (so a solved face counts, a blank wall doesn't). After a capture, the cube must move before the next one, and a face that matches one already captured is never captured again. That way, holding a face still never captures it twice. The guide border shows the state: white while waiting, yellow while holding steady, a green flash on capture. The Capture button stays for manual use (for example, a stickerless cube with a solved face).
 - **Auto-advance.** Each capture moves on to the next unscanned step, and the sixth fills the net. Clicking a step chip rescans that face.
-- **Any order, any rotation.** The steps are only a suggested order. When the six captures don't make a valid cube in the suggested order, each capture's face is worked out from its centre colour and its rotation from the shared edges and corners: the combination that makes the most real pieces wins, and a valid cube always wins. Step 1 is the front, and the side at the top of step 1's picture is up. The result is loaded in that orientation, and a note says the faces were rearranged.
+- **Guided by centre colour.** *(Supersedes Feature 4's Front/Right/Back/Left/Up/Down steps.)* Each step names a centre colour and the colour to keep on top: green, red, blue and orange with white on top (a quarter turn left each time), then white with blue on top, then yellow with green on top. The step chips show each centre's colour, and the instruction line shows the centre colour the camera sees right now. A capture goes to the step of the centre colour it shows, choosing the closest colour among the unscanned steps and the selected step, so the faces can be shown in any order. When every step is filled, a capture replaces the closest colour.
+- **Any rotation, mistakes tolerated.** When the six captures don't make a valid cube as held, each capture's face is worked out from its centre colour and its rotation from the shared edges and corners. The combination that makes the most real pieces wins, a valid cube always wins, and ties go to the holds as instructed. A note says when faces were put right.
+- **Loading orientation.** *(Supersedes Feature 4's "in the orientation it was scanned".)* The scanned cube loads in the standard orientation: white on top, green in front.
 - **Steady camera.** After the first capture, the camera's exposure and white balance are locked at their current values where the camera allows it (best effort; the readings already tolerate exposure changes). They unlock when the camera stops.
 - **Mid-solve cubes.** Any valid state can be scanned, including a partly solved cube with whole faces of one colour.
 
 Acceptance for Feature 5:
-- Captures given in any order and any rotation, with camera noise, give the same state as captures in the guided order.
+- Captures given in any order and any rotation, with camera noise, give the same state as captures held as instructed, with white on top and green in front.
+- A capture goes to the step of its centre colour among the steps it may fill.
 - The auto-capture logic (in `scan.js`, no DOM) captures a steady face exactly once, waits for movement, ignores a repeated face, captures a uniform face only when it has gaps, and ignores a blank or moving view.
-- In a browser with a fake camera that shows the six faces in turn, without pressing Capture, the net fills in and validates.
+- In a browser with a fake camera that shows the six faces in a shuffled order and turned, without pressing Capture, every face lands on its colour's step and the net fills in and validates.
 
 ## Acceptance checklist
 - Baseline behaves exactly as described.
