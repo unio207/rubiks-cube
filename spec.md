@@ -96,6 +96,7 @@ Acceptance for Feature 4:
 Scanning should need as few clicks and as little care as possible. Builds on Feature 4's webcam scan.
 - **Auto-capture.** On by default (an "Auto-capture" checkbox turns it off). A face is captured automatically once it has been held steady in the guide for about 0.75 s. It counts as a face when every cell is one even colour and either the cells show at least two colours or dark gaps separate the cells (so a solved face counts, a blank wall doesn't). After a capture, the cube must move before the next one, and a face that matches one already captured is never captured again. That way, holding a face still never captures it twice. The guide border shows the state: white while waiting, yellow while holding steady, a green flash on capture. The Capture button stays for manual use (for example, a stickerless cube with a solved face).
 - **Auto-advance.** Each capture moves on to the next unscanned step, and the sixth fills the net. Clicking a step chip rescans that face.
+- **Reset scan.** A Reset scan button in the camera card throws away all six captures and starts again at step 1, whether or not the camera is on. It is disabled when nothing has been captured. The net is left as it is (Clear resets the net).
 - **Guided by centre colour.** *(Supersedes Feature 4's Front/Right/Back/Left/Up/Down steps.)* Each step names a centre colour and the colour to keep on top: green, red, blue and orange with white on top (a quarter turn left each time), then white with blue on top, then yellow with green on top. The step chips show each centre's colour, and the instruction line shows the centre colour the camera sees right now. A capture goes to the step of the centre colour it shows, choosing the closest colour among the unscanned steps and the selected step, so the faces can be shown in any order. When every step is filled, a capture replaces the closest colour.
 - **Any rotation, mistakes tolerated.** When the six captures don't make a valid cube as held, each capture's face is worked out from its centre colour and its rotation from the shared edges and corners. The combination that makes the most real pieces wins, a valid cube always wins, and ties go to the holds as instructed. A note says when faces were put right.
 - **Loading orientation.** *(Supersedes Feature 4's "in the orientation it was scanned".)* The scanned cube loads in the standard orientation: white on top, green in front.
@@ -161,6 +162,44 @@ Acceptance for Feature 8:
 - Rebinding, moving a key from another action, Space/Escape refused, several keys per action, and Shift/Alt handling are tested in Node.
 - Bindings survive serialise/parse; corrupt or invalid storage gives the defaults.
 - In a browser: rebinding U to J and U' to F makes J turn U and F turn U'; the bindings survive a reload; Space still runs the timer.
+
+## Roadmap: camera move tracking (planned, not built)
+Goal: the app follows a real solve through the webcam, with no smart cube, so the digital cube, hints, splits and stats keep up with the real cube. This section is a plan, not a feature. Each milestone gets its own Feature section, with firm acceptance numbers, and my approval before it's built. Milestones are in order, and each one is usable on its own.
+
+**Approach: predict, then verify.** The app knows far more than a camera sees, so it uses that knowledge instead of reading the cube from scratch:
+- The starting state is known, from a scramble or a scan, and so is the end of a solve (solved).
+- The scan doubles as colour calibration: stickers are matched to this cube's own colours under this light, not to a generic palette.
+- When the app knows the next move (algorithm trainer, hints), the camera only confirms it.
+- Each guess is a real cube state, reached by legal moves. Common CFOP patterns (triggers, the Feature 2 algs) count as more likely.
+- Moves come mainly from motion (which layer moved, and which way), which needs no colours. Sticker colours are read only when the cube is still and the layers line up, as a check.
+- Several move histories are kept at once and scored against what the camera sees. The best one wins.
+
+**Camera setup.** The camera is in front of the cube and a little above it, so the top and front faces are visible and the left and right faces aren't. Every face turn, including B, D and L, changes some of those 18 stickers, and the front face is never ambiguous. Bright, even light and a short exposure keep fast turns sharp. An outline on the video shows where to hold the cube.
+
+**Milestones**
+1. **Real-world baseline.** Try the existing scanner (Features 4 and 5) on a real webcam and fix what fails. Add a way to record short clips together with the true moves, for testing. The best source of true moves is a Bluetooth smart cube, used only for recording; otherwise label the moves by hand. Clips stay on my computer.
+2. **Read the angled view.** With the cube held in the outline, read the 18 top and front stickers from one frame, using the calibrated colours. Detect "still and aligned" frames.
+3. **Algorithm trainer check.** In the Algorithms tab, I do an alg on the real cube and the camera confirms each move as it happens, marking it on the card. The app knows every move in advance.
+4. **Follow along with hints.** The hint's next move is the expected move. When the cube goes still, the app decides between: the expected move, its reverse, no move, or something else. On the expected move, the digital cube plays it and the hint advances. On something else, it says so and asks me to re-sync: hold still and show the top and front, which settles the state from a short search near the expected one.
+5. **Reconstruction after a solve.** During a timed solve the video is kept in memory. Afterwards it's decoded using the known start state, the solved end and every frame. The result is the move list with CFOP splits, turns per second and the OLL/PLL cases, built from the existing stage checks and algs. Failed or uncertain stretches are marked, not guessed silently.
+6. **Live tracking.** Moves are tracked during a free solve and shown about half a second behind, so each move can be confirmed by what follows. Hand tracking (for example MediaPipe Hands) marks the stickers fingers cover as unseen and helps recognise finger tricks. Hands resting flat can start and stop the timer.
+7. **Optional: find the cube anywhere.** A small trained model finds the cube at any angle, without the outline. It's trained on images rendered from the app's own 3D cube (random angles, lighting, backgrounds, hands), then checked on real clips.
+
+**Ideas to try along the way (unproven):** count turns from the click sounds of a magnetic cube, so the search knows how many moves happened between two still frames. Use a small mirror to show a third face. Use a phone as a second camera.
+
+**Measuring.** Every milestone is tested by replaying recorded clips (or the sticker readings taken from them) in Node, against the true moves. The measures are:
+- the share of moves correct (edit distance to the true sequence);
+- the share of solves reconstructed with no errors;
+- how often a re-sync was needed;
+- delay (live milestones only).
+
+Provisional targets, to be confirmed in each milestone's section:
+- milestones 3–4: at least 98% of moves right at a normal practice pace;
+- milestone 5: at least 90% of solves fully right at up to about 4 turns per second.
+
+Full speedsolving speed (8+ turns per second) is not promised.
+
+**Rules that would change.** From milestones 6–7 on, the single-file, no-extra-libraries rule would have to allow a hand-tracking library and model files hosted with the page. That needs my approval when it's reached. Video is processed in the browser only and never uploaded.
 
 ## Acceptance checklist
 - Baseline behaves exactly as described.
