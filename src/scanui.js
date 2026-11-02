@@ -188,7 +188,9 @@
     var startBtn = el('button', 'sc-main', 'Start camera');
     var captureBtn = el('button', 'sc-main', 'Capture');
     var stopBtn = el('button', null, 'Stop camera');
-    [startBtn, captureBtn, stopBtn].forEach(function (b) { camBtns.appendChild(b); });
+    var resetScanBtn = el('button', null, 'Reset scan');
+    resetScanBtn.title = 'Throw away all six captures and start again at step 1';
+    [startBtn, captureBtn, stopBtn, resetScanBtn].forEach(function (b) { camBtns.appendChild(b); });
 
     var stepsEl = el('div', 'sc-steps'), chips = [];
     var instr = el('p', 'sc-instr');
@@ -246,6 +248,7 @@
       var running = !!stream;
       startBtn.style.display = running ? 'none' : '';
       captureBtn.style.display = stopBtn.style.display = running ? '' : 'none';
+      resetScanBtn.disabled = captures.every(function (c) { return !c; });
       videoBox.style.display = mirrorRow.style.display = autoRow.style.display = running ? '' : 'none';
       video.classList.toggle('sc-mirror', mirrorBox.checked);
       chips.forEach(function (c, k) {
@@ -410,6 +413,14 @@
     startBtn.addEventListener('click', startCamera);
     stopBtn.addEventListener('click', stopCamera);
     captureBtn.addEventListener('click', capture);
+    resetScanBtn.addEventListener('click', function () {
+      captures = [null, null, null, null, null, null];
+      stepIdx = 0;
+      autoDone = false;
+      auto.reset();
+      camMsg.textContent = '';
+      renderCam();
+    });
 
     render();
     renderPalette();
