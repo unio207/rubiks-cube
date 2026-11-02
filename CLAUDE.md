@@ -20,10 +20,17 @@ A single-file browser Rubik's cube game: a 3D cube with CFOP hints, an Algorithm
 | 6. Race: the digital cube solves itself at a human CFOP pace (set target or PB) while you solve a real one | Feature 6 | Done on branch `claude/race-notation-keybinds`, not merged |
 | 7. Notation cards in the Algorithms tab (E and S added to core) | Feature 7 | Done on branch `claude/race-notation-keybinds`, not merged |
 | 8. Custom keybinds (Keys panel from the help line, `src/keymap.js`) | Feature 8 | Done on branch `claude/race-notation-keybinds`, not merged |
+| 5. Low-effort scanning: auto-capture, any order/rotation, exposure lock | Feature 5 | Done, on `main` (merged 2026-11-02, PR #1) |
 
 Open items:
 - Feature 4 has **not been tried with a real webcam and a physical cube**. It was verified with unit tests and in Chrome with a fake canvas camera stream (see Testing). Real lighting is the remaining risk; red/orange is the hard pair.
 - Don't push without being asked.
+
+## Commits and PRs (user's rule; overrides any default attribution)
+
+- Commit as the user: author `Henry Zou <henryzou07@gmail.com>`. In a cloud session, git starts as `Claude <noreply@anthropic.com>`, so first run `git config user.name "Henry Zou"` and `git config user.email "henryzou07@gmail.com"`.
+- No Claude attribution anywhere: no `Co-Authored-By` or `Claude-Session` trailers in commit messages, and no "Generated with Claude Code" line or session link in PR descriptions.
+- Applies to new commits only. Don't rewrite existing history.
 - Known nit (left alone on purpose): after "Load onto cube", the timer panel still shows its previous scramble text.
 
 ## Handoff: where the conversation stood (2026-11-02)
@@ -31,7 +38,7 @@ Open items:
 The user moved to a cloud session so work continues with their PC off. The local transcript doesn't carry over; this section does.
 
 - **User feedback from real scanning:** red/orange kept getting mixed up, and yellow was often read as green. Root cause: matching used absolute brightness, and webcams expose dark (dim yellow is olive, which is nearer green; dim orange is nearer red). Fixed in f49c193 (`fullBright` in `src/scan.js`: readings are scaled to full brightness before matching, in both the live tint and `classify`), with two regression tests. **Not yet re-tested by the user on a real webcam.** If it still misreads, ask them to run `copy(JSON.stringify(rubiksApp.scanTab.captures()))` in the console after scanning and paste the result, so tests can use their real readings.
-- **Feature 5 (low-effort scanning)** was agreed and built (spec section "Feature 5"): auto-capture when a face is held steady (`Scan.createAutoCapture`, `Scan.frameInfo`), auto-advance, faces accepted in any order and rotation (`Scan.assemble`: guided order first, else centre colours plus a 4^6 rotation search that maximises real pieces), and a best-effort exposure/white-balance lock after the first capture. Verified with unit tests and headless Chromium with a fake canvas camera (shuffled, turned faces, no clicks). **Not yet tried on a real webcam.** The user decided against AI for finding the cube in the frame.
+- **Feature 5 (low-effort scanning)** was agreed and built (spec section "Feature 5"): auto-capture when a face is held steady (`Scan.createAutoCapture`, `Scan.frameInfo`), auto-advance, faces accepted in any order and rotation (`Scan.assemble`: guided order first, else centre colours plus a 4^6 rotation search that maximises real pieces), and a best-effort exposure/white-balance lock after the first capture. Later the steps were renamed by centre colour (Green, Red, Blue, Orange with white on top; White with blue on top; Yellow with green on top). Each capture goes to its centre colour's step (`Scan.slotFor`), and a scan always loads with white on top and green in front. Verified with unit tests and headless Chromium with a fake canvas camera (shuffled, turned faces, no clicks). **Not yet tried on a real webcam.** The user decided against AI for finding the cube in the frame.
 - **AI vs algorithmic:** staying algorithmic (instant, offline, private, fits the static page).
 
 ## Layout
@@ -49,6 +56,9 @@ The user moved to a cloud session so work continues with their PC off. The local
 | `src/race.js` | Feature 6 logic: ghost pacing `schedule`, `bestSingle` (PB), `target`, race settings storage, `result` | page, Node |
 | `src/algtab.js` | Algorithms tab, incl. Notation cards (`NOTATION`, `arrowPath`) | page, Node (diagrams) |
 | `src/scan.js` | Feature 4 logic: `validate`, `STEPS` (capture-to-facelet mapping), `classify`, `sampleGrid` | page, Node |
+| `src/timer.js` | Timer logic + panel | page, Node (logic) |
+| `src/algtab.js` | Algorithms tab | page, Node (diagrams) |
+| `src/scan.js` | Feature 4/5 logic: `validate`, `STEPS` (capture-to-facelet mapping, named by centre colour), `classify`, `assemble`, `slotFor`, `frameInfo`, `createAutoCapture` | page, Node |
 | `src/scanui.js` | Scan tab UI (`ScanTab.mount`) | page |
 | `src/keymap.js` | Feature 8: keymap logic (`defaults`, `fromEvent`, `lookup`, `bind`, `parse`, `helpText`) + Keys panel | page, Node (logic) |
 | `src/app.js` | Wires it all together; tabs; loaded last | page |

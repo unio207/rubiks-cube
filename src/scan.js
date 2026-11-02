@@ -226,19 +226,20 @@
   // the first hold to this step's hold. cells[k] is the facelet shown at camera cell k
   // (row-major, row 0 at the top, column 0 on the left as the camera sees it).
   // ---------------------------------------------------------------------------
+  // Steps are named by centre colour (standard scheme: the face letter is also its centre's colour).
   var STEPS = [
-    { face: 'F', rot: [], title: 'Front',
-      text: 'Hold any face toward the camera. Keep the same side on top for the next three steps.' },
-    { face: 'R', rot: ['y'], title: 'Right',
-      text: 'Turn the whole cube a quarter turn to the left, so the right side faces the camera.' },
-    { face: 'B', rot: ['y2'], title: 'Back',
-      text: 'Another quarter turn to the left.' },
-    { face: 'L', rot: ["y'"], title: 'Left',
-      text: 'Another quarter turn to the left.' },
-    { face: 'U', rot: ["x'"], title: 'Up',
-      text: 'One more quarter turn left (the front faces you again), then tip the top toward the camera.' },
-    { face: 'D', rot: ['x'], title: 'Down',
-      text: 'Tip the cube over half a turn, so the bottom faces the camera.' }
+    { face: 'F', rot: [], title: 'Green',
+      text: 'Green centre facing the camera, white centre on top.' },
+    { face: 'R', rot: ['y'], title: 'Red',
+      text: 'Red centre facing the camera, white on top (turn the whole cube a quarter turn to the left).' },
+    { face: 'B', rot: ['y2'], title: 'Blue',
+      text: 'Blue centre facing the camera, white on top (another quarter turn to the left).' },
+    { face: 'L', rot: ["y'"], title: 'Orange',
+      text: 'Orange centre facing the camera, white on top (another quarter turn to the left).' },
+    { face: 'U', rot: ["x'"], title: 'White',
+      text: 'White centre facing the camera, blue on top (green faces you again, then tip the top toward the camera).' },
+    { face: 'D', rot: ['x'], title: 'Yellow',
+      text: 'Yellow centre facing the camera, green on top (tip the cube over half a turn).' }
   ];
   (function () {
     var ids = []; for (var i = 0; i < 54; i++) ids.push(String(i));
@@ -444,14 +445,14 @@
   }
   var PERMS = permutations(FACES);
 
-  // assemble(captures) -> { state, rearranged }. captures[j] = 9 [r,g,b] in camera cell order.
-  // The guided order is tried first. Otherwise each capture's face comes from its centre colour
-  // and its rotation from the shared pieces. Step 1 ends up as the front, with the side at the top
-  // of its picture up.
+  // assemble(captures) -> { state, rearranged }. captures[k] = 9 [r,g,b] in camera cell order for
+  // step k. The holds as instructed are tried first. Otherwise each capture's face comes from its
+  // centre colour and its rotation from the shared pieces. The result has white on top, green in front.
   function assemble(captures) {
     var guided = classify(readingsFromCaptures(captures));
+    if (validCenters(guided)) guided = normalize(guided).state;
     if (validate(guided).ok) return { state: guided, rearranged: false };
-    var guidedScore = validCenters(guided) ? score(normalize(guided).state) : -1;
+    var guidedScore = validCenters(guided) ? score(guided) : -1;
 
     var flat = [];
     captures.forEach(function (c) { c.forEach(function (rgb) { flat.push(fullBright(rgb)); }); });
@@ -484,13 +485,17 @@
     });
     if (!best || best.score <= guidedScore) return { state: guided, rearranged: false };
 
-    // Orient: step 1's face to the front, the face across the top edge of its picture up.
-    var f0 = best.perm[0], top = BASE[f0][ROT[best.r[0]][1]], pos = FL[top].pos, up = null;
-    FL.forEach(function (f, i) {
-      if (i !== top && f.pos.join() === pos.join()) up = faceOfNormal(f.normal);
+    return { state: best.state, rearranged: true };
+  }
+
+  // slotFor(centerRgb, allowed) -> the step in `allowed` whose centre colour is closest to the reading.
+  function slotFor(rgb, allowed) {
+    var lab = toLab(fullBright(rgb)), best = -1, bd = Infinity;
+    allowed.forEach(function (k) {
+      var d = dist(lab, PALETTE_LAB[STEPS[k].face]);
+      if (d < bd) { bd = d; best = k; }
     });
-    var o = ORIENTATIONS.filter(function (x) { return x.centers[2] === f0 && x.centers[0] === up; })[0];
-    return { state: Cube.applyAlg(best.state, o.alg), rearranged: true };
+    return best;
   }
 
   // ---------------------------------------------------------------------------
@@ -599,6 +604,7 @@
     readingsFromCaptures: readingsFromCaptures,
     sampleGrid: sampleGrid,
     assemble: assemble,
+    slotFor: slotFor,
     frameInfo: frameInfo,
     sameFace: sameFace,
     createAutoCapture: createAutoCapture
