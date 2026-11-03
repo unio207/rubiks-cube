@@ -83,6 +83,7 @@ A third top bar tab, Cube | Algorithms | Scan, loads a physical cube's state ont
   Each step chip can be clicked to redo that face. After the sixth capture the colours are classified and the net is filled in for review. The camera stops when leaving the tab.
 - **Colour classification.** Each sticker is read as the median colour of the middle of its cell. The six centres decide which colour is which: of the 24 orientations of a standard cube, pick the one whose colours best match the centre readings (chirality settles red vs orange). Every sticker is then assigned to the centre it is closest to in Lab colour space, with exactly 9 stickers per colour.
 - **Loading.** Load onto cube puts the state on the 3D cube in the orientation it was scanned (Front faces you), clears the move history, refreshes hints, and switches to the Cube tab. The Scan tab is disabled during a timed solve, like Algorithms.
+  - *(Added later.)* **Scramble of the loaded cube.** Loading also works out a scramble for the loaded state: WCA-style face turns only (U D L R F B with `'` and `2`, never the same face twice in a row, about 25 moves or fewer) that turn a solved cube held white on top, green in front into that state (a net entered in another orientation counts as the same cube held that way). It comes from a two-phase (Kociemba) solver in its own Web Worker, so the page never freezes. The timer panel shows "Working out the scramble…" until it is ready, then shows it as the timer scramble, and the next timed solve is saved with it. After that solve the timer goes back to random scrambles. A solved cube gets no scramble. If the cube changes (keys, Scramble, Reset) before the scramble is ready, the result is dropped.
 - No external libraries; the page stays a single file.
 
 Acceptance for Feature 4:
@@ -91,6 +92,7 @@ Acceptance for Feature 4:
 - The capture steps map camera cells to the correct facelets (checked against the whole-cube rotations the instructions describe).
 - Classification recovers the exact state from synthetic camera readings with noise, a brightness change and a colour-temperature shift, for random cube orientations.
 - In a browser with a fake camera stream, six captures fill the net and Load puts that state on the cube.
+- For many random states, the loaded cube's scramble applied to a solved cube gives exactly that state, uses face turns only, never turns the same face twice in a row, and is at most 25 moves. A solve timed after loading is saved with it; a solved cube gives an empty scramble; a result for a cube that changed meanwhile is dropped.
 
 ## Feature 5: Low-effort scanning (added after Feature 4)
 Scanning should need as few clicks and as little care as possible. Builds on Feature 4's webcam scan.

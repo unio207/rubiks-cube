@@ -249,6 +249,29 @@
     return t;
   }
 
+  // ---------- scramble of a loaded cube (Feature 4 "Loading") ----------
+  // createLoadScramble({ compute(state, cb(err, {text})), currentState(), panel }) returns
+  // load(state): shows a "working" note, then the computed scramble as the timer scramble (panel is
+  // the object mount() returns). A solved cube gets no scramble. A result is dropped when a newer load
+  // superseded it or the cube no longer matches the loaded state.
+  var WORKING = 'Working out the scramble…';
+  function createLoadScramble(o) {
+    var id = 0;
+    return function load(state) {
+      var my = ++id;
+      if (Cube.isSolved(state)) { o.panel.setScramble(''); return; }
+      o.panel.setScramble('', WORKING);
+      o.compute(state, function (err, res) {
+        if (my !== id) return;
+        if (err || !res || !Cube.isEqual(state, o.currentState())) {
+          if (o.panel.scrambleWorking()) o.panel.setScramble('');
+          return;
+        }
+        o.panel.setScramble(res.text);
+      });
+    };
+  }
+
   // ---------- UI (browser only) ----------
 
   var CSS = [
@@ -302,7 +325,9 @@
   // hooks.raceStart(targetMs)   - the timer started: start the ghost.
   // hooks.raceCancel()          - the attempt ended before the timer started.
   // Returns { timer, session, keyDown(e), keyUp(e), notifySolved(), newScramble(), isRunning(),
-  //   ghostFinished(ms), raceMessage(text), setGhostBusy(bool) }.
+  //   ghostFinished(ms), raceMessage(text), setGhostBusy(bool), setScramble(text, note), scrambleWorking() }.
+  // setScramble shows and saves a scramble without applying it (a loaded cube's computed scramble);
+  // with a note, the note is shown until the next setScramble or newScramble.
   function mount(container, hooks) {
     hooks = hooks || {};
     if (!document.getElementById('tm-style')) {
@@ -437,9 +462,16 @@
     function newScramble() {
       if (timer.isRunning()) return;
       var moves = Cube.randomScramble(20, { half: true });
-      timer.setScramble(moves.join(' '));
-      scrambleEl.textContent = timer.scramble;
+      showScramble(moves.join(' '));
       if (hooks.applyScramble) hooks.applyScramble(moves);
+    }
+    // The scramble saved with the next solve, and the text shown for it (note: shown instead while
+    // the scramble is still being worked out).
+    var scrambleNote = '';
+    function showScramble(text, note) {
+      timer.setScramble(text);
+      scrambleNote = note || '';
+      scrambleEl.textContent = scrambleNote || text;
     }
 
     function render() {
@@ -571,6 +603,8 @@
       // A note on the current race, e.g. the target is faster than the animation allows.
       raceMessage: function (text) { if (race) { race.cap = text; renderRace(); } },
       setGhostBusy: function (on) { ghostBusy = !!on; render(); },
+      setScramble: showScramble,
+      scrambleWorking: function () { return !!scrambleNote; },
       raceSettings: function () { return { on: raceSet.on, target: raceSet.target, usePB: raceSet.usePB }; }
     };
   }
@@ -581,6 +615,7 @@
     formatTime: formatTime, formatEntry: formatEntry, effective: effective,
     averageOf: averageOf, computeStats: computeStats,
     createSession: createSession, createTimer: createTimer,
+    createLoadScramble: createLoadScramble, WORKING: WORKING,
     mount: mount
   };
 
