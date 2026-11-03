@@ -250,6 +250,17 @@ check('nearestColor', S.nearestColor([240, 100, 20]) === 'L' && S.nearestColor([
     if (C.isEqual(S.assemble(lc).state, ls)) logoOk++;
   }
   check('assemble ignores a logo on the white centre', logoOk === 30, logoOk);
+  // Any way up: each face on its own step but turned at random (some with a logo on white).
+  var upOk = 0, UPN = 200;
+  for (var uk = 0; uk < UPN; uk++) {
+    var us = std(randomState(30)), ur = camera(us, pick([LIGHTS.neutral, LIGHTS.dim, LIGHTS.warm]));
+    var uc = S.STEPS.map(function (sp) { return turn(sp.cells.map(function (f) { return ur[f]; }), Math.floor(rnd() * 4)); });
+    if (uk % 3 === 0) { uc[4] = uc[4].slice(); uc[4][4] = [150, 165, 205]; }
+    if (C.isEqual(S.assemble(uc).state, us)) upOk++;
+  }
+  console.log('assemble any way up: ' + upOk + '/' + UPN);
+  check('assemble: faces shown any way up', upOk === UPN, upOk);
+  check('steps say any way up', S.STEPS.every(function (sp) { return /any way up/.test(sp.text); }));
   check('slotFor picks among allowed steps only', S.slotFor(TRUE.R, [2, 3, 5]) === 3);   // red read, red step full: orange
 })();
 

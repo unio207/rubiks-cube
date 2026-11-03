@@ -25,7 +25,7 @@ Full-window 3D cube on a dark background, keyboard controlled, with Scramble/Sol
 - A Hints button in the top bar shows its on/off state. The H key also toggles it.
 - The hint panel shows: the current stage, the goal of the next step in plain words, the case name if there is one, and the move sequence with the next move marked. The layer for the next move is highlighted on the 3D cube.
 - If I play the suggested move, the panel advances. If I play any other move, the hint recomputes.
-- Hints are hidden while a timed solve is running.
+- Hints stay available during a normal timed solve (inspection and timing): the Hints button and H work, and the panel shows and updates as usual. During a race (Feature 6) they are disabled and hidden. *(Changed later; originally hints were hidden during every timed solve.)*
 - Stages are checked in this order (the first one not done is the current stage):
   1. Orientation: white center must be on D. Hint the rotation that puts it there.
   2. Cross: 4 white edges on D, each matching its side center. Hint a move sequence, ideally optimal (8 moves max).
@@ -69,7 +69,7 @@ Verify every alg in code: starting from its own case state, it must leave its ta
 5. The timer stops when the cube is solved (any orientation) or when I press space. Escape stops it as a DNF.
 - Session list, newest first: each time with +2, DNF and delete actions, plus its scramble. Show current, best, ao5, ao12 and mean. Averages use WCA rules: drop best and worst; more than one DNF in an ao5 makes it a DNF.
 - Save times in localStorage, wrapped in try/catch.
-- Face and rotation keys keep working while timing. Space is reserved for the timer. During a timed solve, hints are hidden and Solve/Scramble/Reset are disabled. Releasing space must never trigger a focused button.
+- Face and rotation keys keep working while timing. Space is reserved for the timer. During a timed solve, Solve/Scramble/Reset, the Algorithms and Scan tabs and the Keys button are disabled; hints stay available (not during a race, see Feature 6). Releasing space must never trigger a focused button.
 
 ## Feature 4: Scan a real cube (added after the first build)
 A third top bar tab, Cube | Algorithms | Scan, loads a physical cube's state onto the 3D cube so hints and Solve work on it.
@@ -83,6 +83,7 @@ A third top bar tab, Cube | Algorithms | Scan, loads a physical cube's state ont
   Each step chip can be clicked to redo that face. After the sixth capture the colours are classified and the net is filled in for review. The camera stops when leaving the tab.
 - **Colour classification.** Each sticker is read as the median colour of the middle of its cell. The six centres decide which colour is which: of the 24 orientations of a standard cube, pick the one whose colours best match the centre readings (chirality settles red vs orange). Every sticker is then assigned to the centre it is closest to in Lab colour space, with exactly 9 stickers per colour.
 - **Loading.** Load onto cube puts the state on the 3D cube in the orientation it was scanned (Front faces you), clears the move history, refreshes hints, and switches to the Cube tab. The Scan tab is disabled during a timed solve, like Algorithms.
+  - *(Added later.)* **Scramble of the loaded cube.** Loading also works out a scramble for the loaded state: WCA-style face turns only (U D L R F B with `'` and `2`, never the same face twice in a row, about 25 moves or fewer) that turn a solved cube held white on top, green in front into that state (a net entered in another orientation counts as the same cube held that way). It comes from a two-phase (Kociemba) solver in its own Web Worker, so the page never freezes. The timer panel shows "Working out the scramble…" until it is ready, then shows it as the timer scramble, and the next timed solve is saved with it. After that solve the timer goes back to random scrambles. A solved cube gets no scramble. If the cube changes (keys, Scramble, Reset) before the scramble is ready, the result is dropped.
 - No external libraries; the page stays a single file.
 
 Acceptance for Feature 4:
@@ -91,6 +92,7 @@ Acceptance for Feature 4:
 - The capture steps map camera cells to the correct facelets (checked against the whole-cube rotations the instructions describe).
 - Classification recovers the exact state from synthetic camera readings with noise, a brightness change and a colour-temperature shift, for random cube orientations.
 - In a browser with a fake camera stream, six captures fill the net and Load puts that state on the cube.
+- For many random states, the loaded cube's scramble applied to a solved cube gives exactly that state, uses face turns only, never turns the same face twice in a row, and is at most 25 moves. A solve timed after loading is saved with it; a solved cube gives an empty scramble; a result for a cube that changed meanwhile is dropped.
 
 ## Feature 5: Low-effort scanning (added after Feature 4)
 Scanning should need as few clicks and as little care as possible. Builds on Feature 4's webcam scan.
@@ -98,6 +100,8 @@ Scanning should need as few clicks and as little care as possible. Builds on Fea
 - **Auto-advance.** Each capture moves on to the next unscanned step, and the sixth fills the net. Clicking a step chip rescans that face.
 - **Reset scan.** A Reset scan button in the camera card throws away all six captures and starts again at step 1, whether or not the camera is on. It is disabled when nothing has been captured. The net is left as it is (Clear resets the net).
 - **Guided by centre colour.** *(Supersedes Feature 4's Front/Right/Back/Left/Up/Down steps.)* Each step names a centre colour and the colour to keep on top: green, red, blue and orange with white on top (a quarter turn left each time), then white with blue on top, then yellow with green on top. The step chips show each centre's colour, and the instruction line shows the centre colour the camera sees right now. A capture goes to the step of the centre colour it shows, choosing the closest colour among the unscanned steps and the selected step, so the faces can be shown in any order. When every step is filled, a capture replaces the closest colour.
+- **Any way up.** *(Added later; supersedes "the colour to keep on top" above.)* Each step only asks for the face with that centre colour, shown any way up. Each face's rotation is worked out from the edges and corners it shares with the others. Ties go to the suggested hold (white on top for the four side faces, blue on top for white, green on top for yellow). When assembling, the steps' own colours are tried first.
+- **Capture animation.** When a face is captured, a copy of its nine stickers lifts off the guide and flies into that face's place in the net (about 0.6 s). It lands there as a preview, which the final assembly may still turn. With "reduce motion" set in the system, it's skipped.
 - **Logos on centres.** *(Added after scanning a GAN cube, whose white centre has a logo.)* A centre cap may carry a logo, so:
   - the centre sticker is read from a ring around its middle, not the middle itself;
   - auto-capture doesn't require the centre cell to be one even colour (the other eight must be);
@@ -120,8 +124,10 @@ After scrambling, or loading a scanned cube, race the digital cube with a real o
 - **The ghost.** On release, the digital cube solves itself from its current state with the `Solver.solve` solution, while my timer runs.
 - **Pacing.** A human-like CFOP rhythm, not a constant rate: a recognition pause before each stage (cross, each F2L pair, OLL, PLL, AUF); slower turning in the cross and F2L, fast bursts inside last-layer algorithms; small random variation from move to move; double turns and cube rotations take longer than quarter turns. Everything is scaled so the ghost finishes within a few percent of the target.
 - **Target time.** A set time in seconds (default 20), remembered in localStorage with the Race and PB choices (wrapped in try/catch). "Use my PB" uses the best non-DNF single in the session, including +2. With no PB yet, the set time is used and the panel says so. Turns can't animate faster than about 60 ms (90 ms for double turns and rotations); if the target is faster than that allows for this solution, the panel says so and the ghost takes the fastest time it can.
-- **During a race.** Face and rotation keys don't move the digital cube. Scramble, Solve, Reset, Hints and the other tabs are disabled, as during a timed solve, until both the ghost and I have finished. The digital cube reaching solved doesn't stop my timer: I stop it with space, and Escape stops it as a DNF, as in Feature 3.
-- **Result.** When the ghost finishes, the panel shows its time while my timer keeps running. When I stop, it shows both times, who won and by how much (a DNF loses; if the ghost is still solving, I won and its time appears when it finishes). My time is saved to the session as a normal solve, marked "race" in the list. The ghost's time is not saved and isn't in the session stats.
+- **During a race.** From the space hold (or inspection) until the race ends, face and rotation keys don't move the digital cube, and Scramble, Solve, Reset, Keys and the other tabs are disabled. Hints are disabled and hidden for the whole race (the Hints button and H do nothing). The digital cube reaching solved doesn't stop my timer: I stop it with space, and Escape stops it as a DNF, as in Feature 3.
+- **The race ends when I stop.** If the ghost is still solving when I press space or Escape, it stops where it is: the digital cube freezes mid-solve (the turn already in motion finishes), no more ghost moves play and nothing stays queued. If the ghost finished first, my timer keeps running until I stop it.
+- **Result.** When the ghost finishes, the panel shows its time while my timer keeps running. When I stop, it shows both times, who won and by how much. If I stopped first, my time is compared with the ghost's scheduled finish: "You 9.39 · Ghost would have finished at 12.00 · You won by 2.61 s." A DNF (Escape) loses: "You DNF(4.00) · Ghost would have finished at 12.00 · DNF: ghost wins." My time is saved to the session as a normal solve (or a DNF), marked "race" in the list. The ghost's time is not saved and isn't in the session stats.
+- **After a race.** The cube stays as it was left (frozen mid-solve, or solved if the ghost finished), hints and all the controls are enabled again, and the timer's next scramble is applied after the usual post-solve delay.
 - If the cube is already solved when I try to start a race, it doesn't start, and the panel says to scramble first.
 
 Acceptance for Feature 6:
@@ -130,6 +136,8 @@ Acceptance for Feature 6:
 - The PB lookup skips DNFs, counts +2, and returns none for an empty or all-DNF session; the target falls back to the set time with a note.
 - In race mode, the cube becoming solved doesn't stop the timer; space does, and the entry is saved with its race mark and survives a reload; stats are unchanged by the ghost.
 - In a browser: scramble, Race with an 8 s target, release space: the digital cube solves in about 8 s, my timer keeps running after it, and pressing space shows both times and the winner.
+- Stopping first with space while the ghost is still solving: my timer stops at once, no ghost move plays afterwards, nothing is queued, and the result is against the ghost's scheduled finish. Escape does the same and saves a DNF with the race mark.
+- Hints are unavailable for the whole race (inspection, hold, solving) and available during a non-race timed solve. Scramble, Solve, Reset, Hints, Keys and the tabs are enabled again after each kind of race end (I stop first, Escape, the ghost first).
 
 ## Feature 7: Notation (added later, inside the Algorithms tab)
 "Add a tab in the Algorithms tab that goes over all notation, with clear visualization of each, like F, F', f, etc."
@@ -167,6 +175,29 @@ Acceptance for Feature 8:
 - Rebinding, moving a key from another action, Space/Escape refused, several keys per action, and Shift/Alt handling are tested in Node.
 - Bindings survive serialise/parse; corrupt or invalid storage gives the defaults.
 - In a browser: rebinding U to J and U' to F makes J turn U and F turn U'; the bindings survive a reload; Space still runs the timer.
+
+## Feature 9: Angled view (camera tracking milestone 2)
+Read the cube from the angle that camera tracking will use: the camera in front of the cube and a little above it, showing the top and front faces (18 stickers) in one frame. The visible result is a faster scan, three holds instead of six. Under the hood it is the reading every later tracking milestone needs.
+
+- **Quick scan.** A "Quick scan (3 holds)" option in the Scan tab's camera card (off by default; the six-face scan stays as it is). Each hold shows two faces, named by centre colour:
+  1. White and green showing.
+  2. Red and blue showing.
+  3. Yellow and orange showing.
+
+  Together they cover all six faces. As in the six-face scan, the holds are suggestions: either face of a pair can be on top, any way up, in any order. Which faces are shown, and how each is turned, is worked out from the centre colours and the shared pieces. The steps say which centre colours are still missing. Each hold is auto-captured like Feature 5 (steady, sticker-like, not a repeat), and the third fills the net through the same classification and assembly as the six-face scan, including logo-tolerant centres and holds that are turned or out of order.
+- **The outline.** Two shapes over the video: a square for the front face and, above it, a trapezoid narrowing toward the back for the top face, both split 3×3. The outline **snaps to the cube**. Within a range of positions, sizes and downward tilts (about 15° to 50°) around where it's drawn, it uses the fit whose 18 cells look most like stickers: even colour inside, dark gaps between. It's drawn where it snapped, so I can see it has locked on. When nothing fits well, it's shown dashed and nothing is read. *(Added while building: the fit also allows small sideways turns, lean and perspective, or the corners are off by more than a few pixels; the tilt is the angle the camera looks down onto the top face.)*
+- **Reading.** Each face is flattened with a perspective transform (homography) from its fitted shape, and each sticker is read the same way as the six-face scan (median of the middle, a ring for the centre). The top and front are often lit differently, so readings are scaled to full brightness before matching, as now. When this cube has been scanned before in this session, its scanned colours are used as the reference.
+- **"Settled" detection.** A view is settled when the cube has been steady for about 0.25 s, all 18 cells are even, and the dark gaps are where the grid says. A layer that's part-turned breaks the grid, so a mid-turn cube is not settled. A small indicator under the video shows settled or not, next to a live mini-view of the 18 stickers read. Later milestones use this to know when the cube can be read.
+- **For later milestones** (no UI of its own): a pure function in `scan.js` that, given a frame and the snapped fit, returns the 18 readings plus a settled flag and a confidence.
+
+Acceptance for Feature 9:
+- Rendered test frames come from the app's own 3D cube, drawn at downward tilts of 15°–50°, sideways turns of ±10°, several sizes and positions, warm/cool/dim lighting and noise. They're generated in the browser test or checked in as small fixtures. On these:
+  - the outline snaps within a few pixels of the true corners;
+  - at least 99% of frames read all 18 stickers exactly *(measured with this cube's colours from an earlier quick scan under the same light as the reference, as in "Reading"; with the generic palette alone, warm light turns some yellows orange)*.
+- On rendered frames of a layer part-turned (10°–80°), the view is never "settled". On aligned frames it is, after the steady time.
+- A fake camera playing rendered frames of the three holds, in any order and turned, fills the net and validates without any clicks.
+- With no cube in view, or a blank wall, the outline stays dashed and nothing is captured.
+- Then I try it on my real webcam with my GAN cube.
 
 ## Roadmap: camera move tracking (planned, not built)
 Goal: the app follows a real solve through the webcam, with no smart cube, so the digital cube, hints, splits and stats keep up with the real cube. This section is a plan, not a feature. Each milestone gets its own Feature section, with firm acceptance numbers, and my approval before it's built. Milestones are in order, and each one is usable on its own.

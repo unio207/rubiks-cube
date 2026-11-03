@@ -51,19 +51,22 @@
   // Race ghost (Feature 6): the digital cube solving itself while the user solves a real one.
   var ghost = { id: 0, solution: null, waiting: false, active: false, plan: null, idx: 0, t0: 0, target: 0 };
   function ghostBusy() { return ghost.waiting || ghost.active; }
+  // A race runs from the space hold (or inspection) until I stop: the ghost stops then too.
+  function racing() { return (timing && ui.timer.isRace()) || ghostBusy(); }
 
   // ---------------------------------------------------------------------------
-  // Solver worker. Built from the inlined core + solver source so it works from file://.
+  // Workers, built from the inlined core + module source so they work from file://.
+  // makeWorker(id, name): a worker running the script with that id, which defines the global `name`.
   // ---------------------------------------------------------------------------
-  var solver = (function () {
-    var src = $('src-core').textContent + '\n;\n' + $('src-solver').textContent;
+  function makeWorker(id, name) {
+    var src = $('src-core').textContent + '\n;\n' + $(id).textContent;
     var pending = {};
     var nextId = 1;
     var worker = null;
     try {
       var body = src + '\n;self.onmessage = function (e) {\n' +
         '  var out = { id: e.data.id };\n' +
-        '  try { out.hint = Solver[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
+        '  try { out.hint = ' + name + '[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
         '  self.postMessage(out);\n' +
         '};\n';
       var url = URL.createObjectURL(new Blob([body], { type: 'text/javascript' }));
@@ -78,35 +81,39 @@
       fallback();
     }
 
-    // If workers are unavailable, run the solver on the main thread (it is fast, ~ms per hint).
+    // If workers are unavailable, run on the main thread (hints take ~ms; scramble tables ~1 s once).
     function fallback() {
       if (worker) { worker.terminate(); worker = null; }
-      if (!window.Solver) (0, eval)($('src-solver').textContent);
-      Object.keys(pending).forEach(function (id) { run(+id, pending[id].state); });
+      if (!window[name]) (0, eval)($(id).textContent);
+      Object.keys(pending).forEach(function (k) { run(+k, pending[k].state); });
     }
-    function run(id, state) {
+    function run(k, state) {
       setTimeout(function () {
-        var cb = pending[id];
+        var cb = pending[k];
         if (!cb) return;
-        delete pending[id];
-        try { cb(null, window.Solver[cb.fn](state)); } catch (err) { cb(String(err && err.message || err), null); }
+        delete pending[k];
+        try { cb(null, window[name][cb.fn](state)); } catch (err) { cb(String(err && err.message || err), null); }
       }, 0);
     }
 
-    // call('getHint' | 'solve', state, cb(err, result))
-    function call(fn, state, cb) {
-      var id = nextId++;
+    // call(fn, state, cb(err, result))
+    return function call(fn, state, cb) {
+      var k = nextId++;
       cb.state = state;
       cb.fn = fn;
-      pending[id] = cb;
-      if (worker) worker.postMessage({ id: id, fn: fn, state: state });
-      else run(id, state);
-    }
-    return {
-      getHint: function (state, cb) { call('getHint', state, cb); },
-      solve: function (state, cb) { call('solve', state, cb); }
+      pending[k] = cb;
+      if (worker) worker.postMessage({ id: k, fn: fn, state: state });
+      else run(k, state);
     };
-  })();
+  }
+  var solverCall = makeWorker('src-solver', 'Solver');
+  var solver = {
+    getHint: function (state, cb) { solverCall('getHint', state, cb); },
+    solve: function (state, cb) { solverCall('solve', state, cb); }
+  };
+  // Scrambles for loaded cubes (two-phase solver): its own worker, so its one-off table build
+  // never delays hints, Solve or the race ghost.
+  var scrambleCall = makeWorker('src-twophase', 'TwoPhase');
 
   // ---------------------------------------------------------------------------
   // Hint panel
@@ -118,7 +125,8 @@
   var stale = true;       // hint no longer matches the cube
   var requestId = 0;
 
-  function hintsVisible() { return hintsOn && !timing && !ghostBusy() && tab === 'cube'; }
+  // Hints stay available during a normal timed solve, but not during a race.
+  function hintsVisible() { return hintsOn && !racing() && tab === 'cube'; }
 
   function refreshHints() {
     hintsBtn.textContent = 'Hints: ' + (hintsOn ? 'on' : 'off');
@@ -261,10 +269,8 @@
 
   var ui = Timer.mount($('timer'), {
     applyScramble: function (moves) {
-      // The ghost is still solving: scramble once it has finished.
-      if (mounted && ghostBusy()) { cancelPendingScramble(); pendingScramble = moves; return; }
-      // After a solve, leave the solved cube visible for a moment before scrambling.
-      if (mounted && ui && ui.timer.state === 'stopped' && Cube.isSolved(app.getState())) {
+      // After a solve, leave the solved cube (or, after a race, the ghost's cube) visible for a moment.
+      if (mounted && ui && ui.timer.state === 'stopped' && (Cube.isSolved(app.getState()) || ui.timer.isRace())) {
         delayScramble(moves);
         return;
       }
@@ -273,6 +279,7 @@
     // Inspection, the space hold and the solve itself all count as timing.
     onActiveChange: function (active) {
       timing = active;
+      if (!active) stopGhost();   // I stopped (or DNF'd) first: the ghost stops where it is
       updateBusy();
     },
     raceBlocked: function () {
@@ -300,17 +307,16 @@
     raceCancel: function () { ghost.id++; ghost.waiting = false; updateBusy(); }
   });
 
-  // Buttons, tabs, hints and keys while timing or racing. During a race the cube keys are off too,
-  // until the ghost has finished.
+  // Buttons, tabs and keys while timing or racing. Hints and the cube keys are off only in a race.
   function updateBusy() {
-    var racing = (timing && ui.timer.isRace()) || ghostBusy();
-    var busy = timing || racing;
+    var race = racing();
+    var busy = timing || race;
     app.setButtonsEnabled(!busy);
     tabAlgs.disabled = busy;
     tabScan.disabled = busy;
-    hintsBtn.disabled = busy;
+    hintsBtn.disabled = race;
     keysBtn.disabled = busy;
-    app.setKeysEnabled(tab === 'cube' && !racing && !keysPanel.isOpen());
+    app.setKeysEnabled(tab === 'cube' && !race && !keysPanel.isOpen());
     ui.setGhostBusy(ghostBusy());
     refreshHints();
   }
@@ -341,7 +347,16 @@
     ghost.active = false;
     ui.ghostFinished(performance.now() - ghost.t0);
     updateBusy();
-    if (pendingScramble && timerIdle()) delayScramble(pendingScramble);
+  }
+  // My timer stopped while the ghost was still solving: freeze the digital cube where it is
+  // (the turn in motion finishes, nothing else plays) and report the ghost's scheduled finish.
+  function stopGhost() {
+    if (!ghostBusy()) return;
+    var at = ghost.active ? ghost.plan.total : ghost.target;   // no plan yet: the target
+    ghost.id++;                // drop a solution still being worked out
+    ghost.waiting = ghost.active = false;
+    app.dropQueued();
+    ui.ghostStopped(at);
   }
   mounted = true;
   applyTimerScramble(ui.timer.scramble);   // the cube matches the scramble shown on load
@@ -369,8 +384,17 @@
       scrambling = false;
       app.reset(state);
       invalidateHint();
+      scrambleLoaded(state);
       setTab('cube');
     }
+  });
+
+  // Feature 4 "Loading": the timer shows (and saves with the next solve) a face-turn scramble that
+  // gives the loaded cube. If the cube changes before it arrives, the result is dropped.
+  var scrambleLoaded = Timer.createLoadScramble({
+    compute: function (state, cb) { scrambleCall('scramble', state, cb); },
+    currentState: function () { return app.getQueuedState(); },
+    panel: ui
   });
 
   function setTab(name) {
@@ -400,7 +424,6 @@
   window.addEventListener('keydown', function (e) {
     if (isSpace(e)) {
       e.preventDefault();
-      if (tab === 'cube' && timerIdle() && ghostBusy()) return;   // the ghost is still solving
       if (tab === 'cube' && timerIdle() && (scrambleTimer || scrambling)) {
         // Don't start inspection or a hold until the next scramble is on the cube.
         if (scrambleTimer) applyTimerScramble(pendingScramble);
@@ -414,7 +437,7 @@
     if (e.key === 'Escape') { ui.keyDown(e); return; }
     if (e.repeat || e.ctrlKey || e.metaKey) return;
     if (e.target && e.target.tagName === 'INPUT') return;     // typing a race target
-    if ((timing && ui.timer.isRace()) || ghostBusy()) return;  // racing: the cube is busy
+    if (racing()) return;   // racing: the cube keys and H are off
     var action = keyAction(e);
     if (action === 'hints') { e.preventDefault(); if (!hintsBtn.disabled) toggleHints(); return; }
     // A cube key queues a move: the layer highlight would be stale while it animates,

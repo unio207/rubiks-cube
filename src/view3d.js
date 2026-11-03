@@ -177,6 +177,7 @@
       enqueue: enqueue,
       isIdle: function () { return !current && queue.length === 0; },
       clearQueue: function () { queue = []; },
+      currentMove: function () { return current ? current.move : null; },   // the turn in motion, or null
       highlightLayer: highlightLayer,
       setFocus: function (m) { setFocus(m); },
       setArrow: function (p) { setArrow(p); },

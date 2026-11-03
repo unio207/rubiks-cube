@@ -864,6 +864,285 @@
 })(typeof self !== 'undefined' ? self : (typeof globalThis !== 'undefined' ? globalThis : this));
 
 </script>
+<script id="src-twophase" type="text/plain">
+// twophase.js - WCA-style scramble for any cube state (Kociemba two-phase solver, no DOM).
+// Browser / Web Worker: needs Cube (core.js) loaded first, defines TwoPhase on the global object.
+// Node: require('./src/twophase.js') returns the same object.
+//
+// scramble(state) -> { moves, text }: face turns only (U D L R F B with ' and 2), never the same face
+// twice in a row, that take a solved cube (white U, green F) to `state`. A state held in another
+// orientation is first turned to white on top, green in front. Usually 19-21 moves.
+// The tables are built on the first call (about a second); after that a scramble takes a few ms.
+(function (root) {
+  'use strict';
+
+  var Cube = (typeof module !== 'undefined' && module.exports) ? require('./core.js') : root.Cube;
+
+  // Faces in Cube.FACES order (U R F D L B), so the opposite of face f is (f + 3) % 6.
+  // Move m = face * 3 + power, power 0 = quarter turn, 1 = half turn, 2 = inverse.
+  var FACES = 'URFDLB';
+  var SUFFIX = ['', '2', "'"];
+  var NAMES = [];
+  for (var f = 0; f < 6; f++) for (var p = 0; p < 3; p++) NAMES.push(FACES[f] + SUFFIX[p]);
+  // Phase 2 moves: U, D (any power) and half turns of R, F, L, B.
+  var P2 = [0, 1, 2, 4, 7, 9, 10, 11, 13, 16];
+
+  // Cubie slots in Kociemba's order; each lists its facelets clockwise, starting on U or D.
+  var CORNERS = [
+    [[1, 1, 1], 'URF'], [[-1, 1, 1], 'UFL'], [[-1, 1, -1], 'ULB'], [[1, 1, -1], 'UBR'],
+    [[1, -1, 1], 'DFR'], [[-1, -1, 1], 'DLF'], [[-1, -1, -1], 'DBL'], [[1, -1, -1], 'DRB']];
+  var EDGES = [
+    [[1, 1, 0], 'UR'], [[0, 1, 1], 'UF'], [[-1, 1, 0], 'UL'], [[0, 1, -1], 'UB'],
+    [[1, -1, 0], 'DR'], [[0, -1, 1], 'DF'], [[-1, -1, 0], 'DL'], [[0, -1, -1], 'DB'],
+    [[1, 0, 1], 'FR'], [[-1, 0, 1], 'FL'], [[-1, 0, -1], 'BL'], [[1, 0, -1], 'BR']];
+  function facelets(slot) {
+    return slot[1].split('').map(function (face) { return Cube.faceletIndex(slot[0], Cube.NORMALS[face]); });
+  }
+  var CF = CORNERS.map(facelets), EF = EDGES.map(facelets);
+
+  // Facelet state -> cubie cube { cp, co, ep, eo } (cp[i] = corner in slot i), or null if impossible.
+  function toCubie(state) {
+    var c = { cp: [], co: [], ep: [], eo: [] };
+    for (var i = 0; i < 8; i++) {
+      var col = CF[i].map(function (k) { return state[k]; });
+      var o = 0;
+      while (o < 3 && col[o] !== 'U' && col[o] !== 'D') o++;
+      var name = col[o] + col[(o + 1) % 3] + col[(o + 2) % 3];
+      var j = CORNERS.findIndex(function (s) { return s[1] === name; });
+      if (o === 3 || j < 0) return null;
+      c.cp.push(j); c.co.push(o);
+    }
+    for (i = 0; i < 12; i++) {
+      var a = state[EF[i][0]], b = state[EF[i][1]];
+      var e = EDGES.findIndex(function (s) { return s[1] === a + b; });
+      var e2 = EDGES.findIndex(function (s) { return s[1] === b + a; });
+      if (e < 0 && e2 < 0) return null;
+      c.ep.push(e >= 0 ? e : e2); c.eo.push(e >= 0 ? 0 : 1);
+    }
+    return c;
+  }
+
+  // a * b: the cube a with the move (or cube) b applied.
+  function multiply(a, b) {
+    var c = { cp: [], co: [], ep: [], eo: [] };
+    for (var i = 0; i < 8; i++) { c.cp[i] = a.cp[b.cp[i]]; c.co[i] = (a.co[b.cp[i]] + b.co[i]) % 3; }
+    for (i = 0; i < 12; i++) { c.ep[i] = a.ep[b.ep[i]]; c.eo[i] = (a.eo[b.ep[i]] + b.eo[i]) % 2; }
+    return c;
+  }
+  function identity() {
+    return { cp: [0, 1, 2, 3, 4, 5, 6, 7], co: [0, 0, 0, 0, 0, 0, 0, 0],
+      ep: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], eo: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] };
+  }
+
+  // ---- Coordinates ----
+  function getTwist(c) { var t = 0; for (var i = 0; i < 7; i++) t = t * 3 + c.co[i]; return t; }
+  function setTwist(c, t) {
+    var s = 0;
+    for (var i = 6; i >= 0; i--) { c.co[i] = t % 3; s += c.co[i]; t = (t / 3) | 0; }
+    c.co[7] = (15 - s) % 3;
+  }
+  function getFlip(c) { var t = 0; for (var i = 0; i < 11; i++) t = t * 2 + c.eo[i]; return t; }
+  function setFlip(c, t) {
+    var s = 0;
+    for (var i = 10; i >= 0; i--) { c.eo[i] = t & 1; s += c.eo[i]; t >>= 1; }
+    c.eo[11] = s & 1;
+  }
+  // Slice: which 4 of the 12 slots hold the FR, FL, BL, BR edges (495 combinations).
+  var MASK2SLICE = new Int16Array(4096).fill(-1), SLICE2MASK = [];
+  for (var mk = 0; mk < 4096; mk++) {
+    var bits = 0;
+    for (var bt = 0; bt < 12; bt++) bits += (mk >> bt) & 1;
+    if (bits === 4) { MASK2SLICE[mk] = SLICE2MASK.length; SLICE2MASK.push(mk); }
+  }
+  function getSlice(c) {
+    var mask = 0;
+    for (var i = 0; i < 12; i++) if (c.ep[i] >= 8) mask |= 1 << i;
+    return MASK2SLICE[mask];
+  }
+  function setSlice(c, s) {
+    var mask = SLICE2MASK[s], j = 8, k = 0;
+    for (var i = 0; i < 12; i++) c.ep[i] = (mask >> i) & 1 ? j++ : k++;
+  }
+  var SLICE_SOLVED = MASK2SLICE[0xf00];
+  // Permutation rank (Lehmer code) of arr[off .. off+n-1], values base .. base+n-1.
+  function rank(arr, off, n) {
+    var r = 0;
+    for (var i = 0; i < n; i++) {
+      var cnt = 0;
+      for (var j = i + 1; j < n; j++) if (arr[off + j] < arr[off + i]) cnt++;
+      r = r * (n - i) + cnt;
+    }
+    return r;
+  }
+  function unrank(r, n, arr, off, base) {
+    var digits = [], avail = [];
+    for (var i = n - 1; i >= 0; i--) { digits[i] = r % (n - i); r = Math.floor(r / (n - i)); }
+    for (i = 0; i < n; i++) avail.push(base + i);
+    for (i = 0; i < n; i++) arr[off + i] = avail.splice(digits[i], 1)[0];
+  }
+
+  // ---- Tables (built once) ----
+  var MOVES = null;
+  var twistMove, flipMove, sliceMove, cpMove, epMove, spMove, prTwist, prFlip, prCp, prEp;
+
+  // Move table: size coordinates x nm moves.
+  function moveTable(size, moves, set, get) {
+    var t = new Uint16Array(size * moves.length), c = identity();
+    for (var i = 0; i < size; i++) {
+      set(c, i);
+      for (var k = 0; k < moves.length; k++) t[i * moves.length + k] = get(multiply(c, MOVES[moves[k]]));
+    }
+    return t;
+  }
+  // Breadth-first distance table over the pair (a, b), index a * nb + b.
+  function pruneTable(na, nb, ta, tb, nm, start) {
+    var size = na * nb, dist = new Int8Array(size).fill(-1), queue = new Int32Array(size);
+    var head = 0, tail = 0;
+    dist[start] = 0; queue[tail++] = start;
+    while (head < tail) {
+      var x = queue[head++], a = (x / nb) | 0, b = x - a * nb, d = dist[x] + 1;
+      for (var m = 0; m < nm; m++) {
+        var y = ta[a * nm + m] * nb + tb[b * nm + m];
+        if (dist[y] < 0) { dist[y] = d; queue[tail++] = y; }
+      }
+    }
+    return dist;
+  }
+
+  function init() {
+    if (MOVES) return;
+    var solved = Cube.solvedState();
+    MOVES = NAMES.map(function (n) { return toCubie(Cube.applyMove(solved, n)); });
+    var ALL = []; for (var m = 0; m < 18; m++) ALL.push(m);
+    twistMove = moveTable(2187, ALL, setTwist, getTwist);
+    flipMove = moveTable(2048, ALL, setFlip, getFlip);
+    sliceMove = moveTable(495, ALL, setSlice, getSlice);
+    cpMove = moveTable(40320, P2, function (c, i) { unrank(i, 8, c.cp, 0, 0); }, function (c) { return rank(c.cp, 0, 8); });
+    epMove = moveTable(40320, P2, function (c, i) { unrank(i, 8, c.ep, 0, 0); }, function (c) { return rank(c.ep, 0, 8); });
+    spMove = moveTable(24, P2, function (c, i) { unrank(i, 4, c.ep, 8, 8); }, function (c) { return rank(c.ep, 8, 4); });
+    prTwist = pruneTable(2187, 495, twistMove, sliceMove, 18, SLICE_SOLVED);
+    prFlip = pruneTable(2048, 495, flipMove, sliceMove, 18, SLICE_SOLVED);
+    prCp = pruneTable(40320, 24, cpMove, spMove, 10, 0);
+    prEp = pruneTable(40320, 24, epMove, spMove, 10, 0);
+  }
+
+  // A move may follow `last` unless it turns the same face, or the opposite face in the wrong order
+  // (D then U is skipped since U then D is the same).
+  function allowed(face, last) {
+    if (last < 0) return true;
+    var lf = (last / 3) | 0;
+    return face !== lf && face !== lf - 3;
+  }
+
+  // Shortest-ish face-turn solution of cubie cube c. opts.target: stop at a solution this short
+  // (default 21); opts.maxMs: then stop with the best so far (default 200).
+  function solveCubie(c, opts) {
+    init();
+    opts = opts || {};
+    var target = opts.target || 21, deadline = Date.now() + (opts.maxMs || 200);
+    var best = null, done = false, sol1 = [], sol2 = [], nodes = 0;
+
+    function phase2(cp, ep, sp, togo, last) {
+      if (togo === 0) return cp === 0 && ep === 0 && sp === 0;
+      for (var k = 0; k < 10; k++) {
+        var m = P2[k];
+        if (!allowed((m / 3) | 0, last)) continue;
+        var cp2 = cpMove[cp * 10 + k], ep2 = epMove[ep * 10 + k], sp2 = spMove[sp * 10 + k];
+        if (Math.max(prCp[cp2 * 24 + sp2], prEp[ep2 * 24 + sp2]) >= togo) continue;
+        sol2.push(m);
+        if (phase2(cp2, ep2, sp2, togo - 1, m)) return true;
+        sol2.pop();
+      }
+      return false;
+    }
+
+    function startPhase2() {
+      var last = sol1.length ? sol1[sol1.length - 1] : -1;
+      // A phase-1 solution ending in a phase-2 move was already tried one move shorter.
+      if (last >= 0 && P2.indexOf(last) >= 0) return;
+      var d = c;
+      for (var i = 0; i < sol1.length; i++) d = multiply(d, MOVES[sol1[i]]);
+      var cp = rank(d.cp, 0, 8), ep = rank(d.ep, 0, 8), sp = rank(d.ep, 8, 4);
+      var limit = Math.min(18, (best ? best.length : 99) - 1 - sol1.length);
+      for (var depth = Math.max(prCp[cp * 24 + sp], prEp[ep * 24 + sp]); depth <= limit; depth++) {
+        sol2 = [];
+        if (phase2(cp, ep, sp, depth, last)) {
+          best = sol1.concat(sol2);
+          if (best.length <= target) done = true;
+          break;
+        }
+      }
+      if (best && Date.now() > deadline) done = true;
+    }
+
+    function phase1(tw, fl, sl, togo, last) {
+      if (togo === 0) { if (tw === 0 && fl === 0 && sl === SLICE_SOLVED) startPhase2(); return; }
+      if ((++nodes & 1023) === 0 && best && Date.now() > deadline) done = true;
+      for (var m = 0; m < 18 && !done; m++) {
+        if (!allowed((m / 3) | 0, last)) continue;
+        var tw2 = twistMove[tw * 18 + m], fl2 = flipMove[fl * 18 + m], sl2 = sliceMove[sl * 18 + m];
+        if (Math.max(prTwist[tw2 * 495 + sl2], prFlip[fl2 * 495 + sl2]) >= togo) continue;
+        sol1.push(m);
+        phase1(tw2, fl2, sl2, togo - 1, m);
+        sol1.pop();
+      }
+    }
+
+    var tw = getTwist(c), fl = getFlip(c), sl = getSlice(c);
+    for (var depth = Math.max(prTwist[tw * 495 + sl], prFlip[fl * 495 + sl]); !done && depth <= 20; depth++) {
+      if (best && depth >= best.length) break;
+      phase1(tw, fl, sl, depth, -1);
+    }
+    return best;
+  }
+
+  // The state turned to white on top, green in front (state itself when it already is).
+  var ROTATIONS = [];
+  ['', 'x', 'x2', "x'", 'z', "z'"].forEach(function (a) {
+    ['', 'y', 'y2', "y'"].forEach(function (b) { ROTATIONS.push((a + ' ' + b).trim()); });
+  });
+  function standardOrientation(state) {
+    for (var i = 0; i < ROTATIONS.length; i++) {
+      var s = ROTATIONS[i] ? Cube.applyAlg(state, ROTATIONS[i]) : state;
+      if (Cube.centerColor(s, 'U') === 'U' && Cube.centerColor(s, 'F') === 'F') return s;
+    }
+    return null;
+  }
+
+  // Every piece once, no twisted corner or flipped edge, and matching permutation parity.
+  function parity(p) {
+    var n = 0;
+    for (var i = 0; i < p.length; i++) for (var j = i + 1; j < p.length; j++) if (p[j] < p[i]) n++;
+    return n & 1;
+  }
+  function solvable(c) {
+    var sum = function (a) { return a.reduce(function (x, y) { return x + y; }, 0); };
+    var distinct = function (a) { return a.every(function (x, i) { return a.indexOf(x) === i; }); };
+    return distinct(c.cp) && distinct(c.ep) && sum(c.co) % 3 === 0 && sum(c.eo) % 2 === 0 &&
+      parity(c.cp) === parity(c.ep);
+  }
+
+  // scramble(state, opts) -> { moves: [names], text }. Throws on a state no real cube has.
+  function scramble(state, opts) {
+    var s = standardOrientation(state);
+    var c = s && toCubie(s);
+    if (!c || !solvable(c)) throw new Error('Not a valid cube');
+    var sol = solveCubie(c, opts);
+    var moves = [];
+    for (var i = sol.length - 1; i >= 0; i--) {
+      var m = sol[i], pw = m % 3;
+      moves.push(NAMES[m - pw + (pw === 1 ? 1 : 2 - pw)]);   // X <-> X', X2 stays
+    }
+    return { moves: moves, text: moves.join(' ') };
+  }
+
+  var TwoPhase = { init: init, scramble: scramble, toCubie: toCubie, multiply: multiply, NAMES: NAMES };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = TwoPhase;
+  else root.TwoPhase = TwoPhase;
+})(typeof self !== 'undefined' ? self : (typeof globalThis !== 'undefined' ? globalThis : this));
+
+</script>
 <script>
 // view3d.js - Three.js r128 cube renderer (main cube and mini cubes).
 // Browser: defines window.CubeView (needs global THREE and window.Cube).
@@ -1044,6 +1323,7 @@
       enqueue: enqueue,
       isIdle: function () { return !current && queue.length === 0; },
       clearQueue: function () { queue = []; },
+      currentMove: function () { return current ? current.move : null; },   // the turn in motion, or null
       highlightLayer: highlightLayer,
       setFocus: function (m) { setFocus(m); },
       setArrow: function (p) { setArrow(p); },
@@ -1477,6 +1757,15 @@
       updateSolved();
     }
 
+    // Drop every queued move that hasn't started; the turn in motion finishes. The history then
+    // matches what the cube will show.
+    function dropQueued() {
+      view.clearQueue();
+      var cur = view.currentMove();
+      history.reset(cur ? Cube.applyMove(view.getState(), cur) : view.getState());
+      updateSolved();
+    }
+
     function bind(btn, fn) {
       if (!btn) return;
       btn.addEventListener('click', function () { fn(); btn.blur(); });
@@ -1507,6 +1796,7 @@
       scramble: scramble,
       solve: solve,
       reset: reset,                                   // reset(state?) instant, clears queue + history
+      dropQueued: dropQueued,                         // stop after the turn in motion
       getState: function () { return view.getState(); },          // state after completed moves
       getQueuedState: function () { return history.state.slice(); }, // state after all queued moves
       getHistory: function () { return history.moves.slice(); },
@@ -1778,6 +2068,29 @@
     return t;
   }
 
+  // ---------- scramble of a loaded cube (Feature 4 "Loading") ----------
+  // createLoadScramble({ compute(state, cb(err, {text})), currentState(), panel }) returns
+  // load(state): shows a "working" note, then the computed scramble as the timer scramble (panel is
+  // the object mount() returns). A solved cube gets no scramble. A result is dropped when a newer load
+  // superseded it or the cube no longer matches the loaded state.
+  var WORKING = 'Working out the scramble…';
+  function createLoadScramble(o) {
+    var id = 0;
+    return function load(state) {
+      var my = ++id;
+      if (Cube.isSolved(state)) { o.panel.setScramble(''); return; }
+      o.panel.setScramble('', WORKING);
+      o.compute(state, function (err, res) {
+        if (my !== id) return;
+        if (err || !res || !Cube.isEqual(state, o.currentState())) {
+          if (o.panel.scrambleWorking()) o.panel.setScramble('');
+          return;
+        }
+        o.panel.setScramble(res.text);
+      });
+    };
+  }
+
   // ---------- UI (browser only) ----------
 
   var CSS = [
@@ -1831,7 +2144,10 @@
   // hooks.raceStart(targetMs)   - the timer started: start the ghost.
   // hooks.raceCancel()          - the attempt ended before the timer started.
   // Returns { timer, session, keyDown(e), keyUp(e), notifySolved(), newScramble(), isRunning(),
-  //   ghostFinished(ms), raceMessage(text), setGhostBusy(bool) }.
+  //   ghostFinished(ms), ghostStopped(scheduledMs), raceMessage(text), setGhostBusy(bool),
+  //   setScramble(text, note), scrambleWorking() }.
+  // setScramble shows and saves a scramble without applying it (a loaded cube's computed scramble);
+  // with a note, the note is shown until the next setScramble or newScramble.
   function mount(container, hooks) {
     hooks = hooks || {};
     if (!document.getElementById('tm-style')) {
@@ -1960,15 +2276,22 @@
     function renderRace() {
       raceEl.style.display = race ? '' : 'none';
       if (!race) { raceEl.textContent = ''; return; }
-      raceEl.textContent = race.msg || Race.result(race.user, race.ghost).text;
+      raceEl.textContent = race.msg || Race.result(race.user, race.ghost, race.stoppedAt).text;
       if (race.cap) raceEl.textContent += '  ' + race.cap;
     }
     function newScramble() {
       if (timer.isRunning()) return;
       var moves = Cube.randomScramble(20, { half: true });
-      timer.setScramble(moves.join(' '));
-      scrambleEl.textContent = timer.scramble;
+      showScramble(moves.join(' '));
       if (hooks.applyScramble) hooks.applyScramble(moves);
+    }
+    // The scramble saved with the next solve, and the text shown for it (note: shown instead while
+    // the scramble is still being worked out).
+    var scrambleNote = '';
+    function showScramble(text, note) {
+      timer.setScramble(text);
+      scrambleNote = note || '';
+      scrambleEl.textContent = scrambleNote || text;
     }
 
     function render() {
@@ -2097,9 +2420,13 @@
       isRunning: function () { return timer.isRunning(); },
       // The ghost finished the digital cube in ms (from the timer's start).
       ghostFinished: function (ms) { if (race) { race.ghost = ms; renderRace(); } },
+      // I stopped first, so the ghost was stopped too; ms is when it was scheduled to finish.
+      ghostStopped: function (ms) { if (race) { race.stoppedAt = ms; renderRace(); } },
       // A note on the current race, e.g. the target is faster than the animation allows.
       raceMessage: function (text) { if (race) { race.cap = text; renderRace(); } },
       setGhostBusy: function (on) { ghostBusy = !!on; render(); },
+      setScramble: showScramble,
+      scrambleWorking: function () { return !!scrambleNote; },
       raceSettings: function () { return { on: raceSet.on, target: raceSet.target, usePB: raceSet.usePB }; }
     };
   }
@@ -2110,6 +2437,7 @@
     formatTime: formatTime, formatEntry: formatEntry, effective: effective,
     averageOf: averageOf, computeStats: computeStats,
     createSession: createSession, createTimer: createTimer,
+    createLoadScramble: createLoadScramble, WORKING: WORKING,
     mount: mount
   };
 
@@ -2252,20 +2580,24 @@
   }
 
   // Result of a race: user is the saved entry (or null while running), ghost the ghost's ms (or null
-  // while it is still solving). -> { winner: 'you' | 'ghost' | 'tie' | null, margin: ms | null, text }
-  function result(user, ghost) {
+  // while it is still solving or was stopped). stoppedAt: when I stopped first, the ghost is stopped
+  // too and this is its scheduled finish (ms), which my time is compared against.
+  // -> { winner: 'you' | 'ghost' | 'tie' | null, margin: ms | null, text }
+  function result(user, ghost, stoppedAt) {
     var g = ghost === null || ghost === undefined ? null : ghost;
+    var s = stoppedAt === null || stoppedAt === undefined ? null : stoppedAt;
     if (!user) {
       return { winner: null, margin: null, text: g === null ? 'Racing the ghost…' : 'Ghost finished in ' + Timer.formatTime(g) + '. Keep going!' };
     }
     var u = Timer.effective(user);
     var you = 'You ' + Timer.formatEntry(user);
-    if (g === null) {
-      if (u === Infinity) return { winner: 'ghost', margin: null, text: you + '  ·  Ghost still solving: ghost wins.' };
-      return { winner: 'you', margin: null, text: you + '  ·  Ghost still solving: you won!' };
+    if (g === null && s === null) {   // ended before the ghost started (inspection ran out)
+      if (u === Infinity) return { winner: 'ghost', margin: null, text: you + '  ·  DNF: ghost wins.' };
+      return { winner: 'you', margin: null, text: you + '  ·  You won!' };
     }
-    var both = you + '  ·  Ghost ' + Timer.formatTime(g) + '  ·  ';
-    if (u === Infinity) return { winner: 'ghost', margin: null, text: both + 'Ghost wins.' };
+    var both = you + '  ·  ' + (g !== null ? 'Ghost ' + Timer.formatTime(g) : 'Ghost would have finished at ' + Timer.formatTime(s)) + '  ·  ';
+    if (g === null) g = s;
+    if (u === Infinity) return { winner: 'ghost', margin: null, text: both + 'DNF: ghost wins.' };
     // Compare the times as shown (truncated to 0.01 s), so the margin matches the two numbers.
     var d = Math.abs(Math.floor(u / 10) - Math.floor(g / 10)) * 10;
     if (d === 0) return { winner: 'tie', margin: 0, text: both + 'Tie!' };
@@ -2938,8 +3270,9 @@
 
 </script>
 <script>
-// scan.js - Feature 4 logic (no DOM): validating a hand-entered or scanned state, mapping webcam
-// captures to facelets, and classifying sticker colours.
+// scan.js - Feature 4/5 logic (no DOM): validating a hand-entered or scanned state, mapping webcam
+// captures to facelets, classifying sticker colours and auto-capture. Feature 9: the angled view
+// (top and front faces in one frame): snapping the outline, reading 18 stickers, settled detection.
 // Browser: defines window.Scan (needs window.Cube). Node: require('./src/scan.js').
 (function (root) {
   'use strict';
@@ -3169,17 +3502,17 @@
   // Steps are named by centre colour (standard scheme: the face letter is also its centre's colour).
   var STEPS = [
     { face: 'F', rot: [], title: 'Green',
-      text: 'Green centre facing the camera, white centre on top.' },
+      text: 'Show the face with the green centre, any way up.' },
     { face: 'R', rot: ['y'], title: 'Red',
-      text: 'Red centre facing the camera, white on top (turn the whole cube a quarter turn to the left).' },
+      text: 'Show the face with the red centre, any way up.' },
     { face: 'B', rot: ['y2'], title: 'Blue',
-      text: 'Blue centre facing the camera, white on top (another quarter turn to the left).' },
+      text: 'Show the face with the blue centre, any way up.' },
     { face: 'L', rot: ["y'"], title: 'Orange',
-      text: 'Orange centre facing the camera, white on top (another quarter turn to the left).' },
+      text: 'Show the face with the orange centre, any way up.' },
     { face: 'U', rot: ["x'"], title: 'White',
-      text: 'White centre facing the camera, blue on top (green faces you again, then tip the top toward the camera).' },
+      text: 'Show the face with the white centre, any way up.' },
     { face: 'D', rot: ['x'], title: 'Yellow',
-      text: 'Yellow centre facing the camera, green on top (tip the cube over half a turn).' }
+      text: 'Show the face with the yellow centre, any way up.' }
   ];
   (function () {
     var ids = []; for (var i = 0; i < 54; i++) ids.push(String(i));
@@ -3260,7 +3593,12 @@
   // Colours for all 54 Lab readings, given the centre colours: balanced assignment to the centres,
   // refined against each colour's mean. Only which stickers share a face matters, not where they are.
   function label(labs, letters) {
-    var centerLab = CENTERS.map(function (i) { return labs[i]; });
+    // A centre reading way off its own colour (a logo, glare) is a bad reference: use the palette.
+    var centerLab = CENTERS.map(function (i, k) {
+      var own = dist(labs[i], PALETTE_LAB[letters[k]]), bestD = Infinity;
+      COLOR_LETTERS.forEach(function (c) { bestD = Math.min(bestD, dist(labs[i], PALETTE_LAB[c])); });
+      return own - bestD > WAY_OFF ? PALETTE_LAB[letters[k]] : labs[i].map(function (v, j) { return (v + PALETTE_LAB[letters[k]][j]) / 2; });
+    });
     var out = assign(labs, letters, centerLab);
     // A single centre is a noisy reference: refine against the mean of each colour's 9 stickers.
     for (var iter = 0; iter < 4; iter++) {
@@ -3422,6 +3760,14 @@
       for (var j = 0; j < 6; j++) cost += dist(labs[j * 9 + 4], PALETTE_LAB[perm[j]]);
       return { perm: perm, cost: cost };
     }).sort(function (a, b) { return a.cost - b.cost; }).slice(0, 6);
+    // The steps' own colours are always tried too: each capture went to the step of its centre
+    // colour, so this is usually right even when a logo spoils a centre reading.
+    var own = STEPS.map(function (st) { return st.face; });
+    if (!cands.some(function (c) { return c.perm.join('') === own.join(''); })) {
+      var oc = 0;
+      for (var j0 = 0; j0 < 6; j0++) oc += dist(labs[j0 * 9 + 4], PALETTE_LAB[own[j0]]);
+      cands.push({ perm: own, cost: oc });
+    }
 
     var best = null;
     cands.forEach(function (cand) {
@@ -3439,7 +3785,9 @@
         var sc = realPieces(s);
         if (best && sc < best.score) continue;
         if (sc === 20) sc += validate(s).ok ? 1 : 0;
-        if (!best || sc > best.score) best = { score: sc, state: s.slice(), perm: perm, r: r.slice() };
+        if (!best || sc > best.score || sc === best.score && cand.cost < best.cost) {
+          best = { score: sc, cost: cand.cost, state: s.slice(), perm: perm, r: r.slice() };
+        }
       }
     });
     if (!best || best.score <= guidedScore) return { state: guided, rearranged: false };
@@ -3551,6 +3899,595 @@
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // Angled view (Feature 9): the camera in front of the cube and a little above it sees the top and
+  // front faces. A fit is a pinhole view of the cube: p = { x, y, s, tilt, yaw, roll, pz }, where
+  // (x, y) is the image of the cube's centre, s the pixels per sticker pitch at the centre's depth,
+  // tilt the downward view angle (degrees), yaw a sideways turn, roll a lean in the picture, and pz
+  // the perspective (1 / distance in pitches). The image centre is taken as the optical centre.
+  // ---------------------------------------------------------------------------
+  var RAD = Math.PI / 180;
+  var TILT_MIN = 15, TILT_MAX = 50;
+
+  function rotation(p) {   // R = Rz(roll) * Rx(tilt) * Ry(yaw)
+    var cy = Math.cos(p.yaw * RAD), sy = Math.sin(p.yaw * RAD);
+    var ct = Math.cos(p.tilt * RAD), st = Math.sin(p.tilt * RAD);
+    var cr = Math.cos(p.roll * RAD), sr = Math.sin(p.roll * RAD);
+    var a = [[cy, 0, sy], [st * sy, ct, -st * cy], [-ct * sy, st, ct * cy]];   // Rx(tilt) * Ry(yaw)
+    return [
+      [cr * a[0][0] - sr * a[1][0], cr * a[0][1] - sr * a[1][1], cr * a[0][2] - sr * a[1][2]],
+      [sr * a[0][0] + cr * a[1][0], sr * a[0][1] + cr * a[1][1], sr * a[0][2] + cr * a[1][2]],
+      a[2]
+    ];
+  }
+  // Image point of cube point P (pitches; +x right, +y up, +z toward the camera).
+  function project(p, R, w, h, P) {
+    var X = R[0][0] * P[0] + R[0][1] * P[1] + R[0][2] * P[2];
+    var Y = R[1][0] * P[0] + R[1][1] * P[1] + R[1][2] * P[2];
+    var Z = R[2][0] * P[0] + R[2][1] * P[1] + R[2][2] * P[2];
+    var d = 1 / (1 - p.pz * Z), cx = w / 2, cy = h / 2;
+    return [cx + (p.x - cx + p.s * X) * d, cy + (p.y - cy - p.s * Y) * d];
+  }
+  // The outline of a fit: front [top-left, top-right, bottom-right, bottom-left] and top
+  // [back-left, back-right, front-right, front-left], in image pixels.
+  function angledQuads(p, w, h) {
+    var R = rotation(p), q = function (P) { return project(p, R, w, h, P); };
+    return {
+      front: [q([-1.5, 1.5, 1.5]), q([1.5, 1.5, 1.5]), q([1.5, -1.5, 1.5]), q([-1.5, -1.5, 1.5])],
+      top: [q([-1.5, 1.5, -1.5]), q([1.5, 1.5, -1.5]), q([1.5, 1.5, 1.5]), q([-1.5, 1.5, 1.5])]
+    };
+  }
+  // The outline drawn before anything is found: centred, a little below the middle.
+  function defaultFit(w, h) {
+    var m = Math.min(w, h), s = 0.13 * m;
+    return { x: w / 2, y: h * 0.56, s: s, tilt: 30, yaw: 0, roll: 0, pz: s / (0.8 * w) };
+  }
+
+  // Homography taking the unit square (0,0) (1,0) (1,1) (0,1) to the quad q (Heckbert).
+  function squareToQuad(q) {
+    var x0 = q[0][0], y0 = q[0][1], x1 = q[1][0], y1 = q[1][1], x2 = q[2][0], y2 = q[2][1], x3 = q[3][0], y3 = q[3][1];
+    var dx1 = x1 - x2, dx2 = x3 - x2, dx3 = x0 - x1 + x2 - x3, dy1 = y1 - y2, dy2 = y3 - y2, dy3 = y0 - y1 + y2 - y3;
+    var g = 0, hh = 0, den = dx1 * dy2 - dx2 * dy1;
+    if (den !== 0 && (dx3 || dy3)) { g = (dx3 * dy2 - dx2 * dy3) / den; hh = (dx1 * dy3 - dx3 * dy1) / den; }
+    return [x1 - x0 + g * x1, x3 - x0 + hh * x3, x0, y1 - y0 + g * y1, y3 - y0 + hh * y3, y0, g, hh];
+  }
+  function mapH(H, u, v, out) {
+    var z = H[6] * u + H[7] * v + 1;
+    out[0] = (H[0] * u + H[1] * v + H[2]) / z;
+    out[1] = (H[3] * u + H[4] * v + H[5]) / z;
+    return out;
+  }
+
+  // Brightness (largest channel) of a frame, box-blurred by r pixels, so that a grid line placed on
+  // a dark gap sits in a valley whose bottom is the middle of the gap.
+  function brightness(data, w, h, r) {
+    var n = w * h, v = new Float32Array(n), t = new Float32Array(n), i, x, y;
+    for (i = 0; i < n; i++) { var p = i * 4; v[i] = Math.max(data[p], data[p + 1], data[p + 2]); }
+    if (r < 1) return v;
+    for (y = 0; y < h; y++) {          // horizontal pass
+      var row = y * w, acc = 0, cnt = 0;
+      for (x = 0; x < Math.min(r, w); x++) { acc += v[row + x]; cnt++; }
+      for (x = 0; x < w; x++) {
+        if (x + r < w) { acc += v[row + x + r]; cnt++; }
+        if (x - r - 1 >= 0) { acc -= v[row + x - r - 1]; cnt--; }
+        t[row + x] = acc / cnt;
+      }
+    }
+    for (x = 0; x < w; x++) {          // vertical pass
+      var acc2 = 0, cnt2 = 0;
+      for (y = 0; y < Math.min(r, h); y++) { acc2 += t[y * w + x]; cnt2++; }
+      for (y = 0; y < h; y++) {
+        if (y + r < h) { acc2 += t[(y + r) * w + x]; cnt2++; }
+        if (y - r - 1 >= 0) { acc2 -= t[(y - r - 1) * w + x]; cnt2--; }
+        v[y * w + x] = acc2 / cnt2;
+      }
+    }
+    return v;
+  }
+
+  // The 27 places where the grid says a dark gap is: [face, cellA, cellB, line] for 12 inside each
+  // face (cells 0-8 top, 9-17 front) and 3 along the edge between the faces. line = [u0, v0, u1, v1]
+  // in the face's unit square, from one end of the shared side to the other.
+  var SEGMENTS = (function () {
+    var out = [];
+    [0, 1].forEach(function (f) {
+      for (var r = 0; r < 3; r++) for (var c = 1; c < 3; c++) out.push([f, f * 9 + r * 3 + c - 1, f * 9 + r * 3 + c, [c / 3, r / 3, c / 3, (r + 1) / 3]]);
+      for (var r2 = 1; r2 < 3; r2++) for (var c2 = 0; c2 < 3; c2++) out.push([f, f * 9 + (r2 - 1) * 3 + c2, f * 9 + r2 * 3 + c2, [c2 / 3, r2 / 3, (c2 + 1) / 3, r2 / 3]]);
+    });
+    for (var c3 = 0; c3 < 3; c3++) out.push([1, 6 + c3, 9 + c3, [c3 / 3, 0, (c3 + 1) / 3, 0]]);   // front row 0 meets top row 2
+    return out;
+  })();
+
+  // How much a fit looks like stickers: each cell one even colour, darker gaps where the grid says.
+  // Returns 0..1 (about 0.4 for a blank wall, 0.8+ for a cube). frontOnly: the front face alone.
+  // level 0 (search): few samples, gaps looked for in a wide band across the line, so the fit only
+  // has to be roughly right; 1: a narrower band; 2 (final): many samples, gaps where the grid says.
+  var LEVELS = [
+    { P: [0.38, 0.5, 0.62], T: [0.3, 0.7], A: [-0.3, -0.15, 0, 0.15, 0.3] },
+    { P: [0.3, 0.5, 0.7], T: [0.25, 0.5, 0.75], A: [-0.12, 0, 0.12] },
+    { P: [0.24, 0.37, 0.5, 0.63, 0.76], T: [0.2, 0.35, 0.5, 0.65, 0.8], A: [0] }
+  ];
+  function fitScore(fr, quads, level, frontOnly) {
+    var w = fr.w, h = fr.h, data = fr.data, V = fr.v, LV = LEVELS[level];
+    if (!inside(quads, w, h)) return -1;
+    var Hs = [squareToQuad(quads.top), squareToQuad(quads.front)], pt = [0, 0];
+    var P = LV.P, cellV = new Float32Array(18), even = 0, nEven = 0;
+    for (var k = frontOnly ? 9 : 0; k < 18; k++) {
+      var H = Hs[k < 9 ? 0 : 1], r = Math.floor((k % 9) / 3), c = k % 3, ctr = k % 9 === 4;
+      var sr = 0, sg = 0, sb = 0, n = 0, rs = [], gs = [], bs = [];
+      for (var i = 0; i < P.length; i++) for (var j = 0; j < P.length; j++) {
+        if (ctr && Math.abs(P[i] - 0.5) < 0.1 && Math.abs(P[j] - 0.5) < 0.1) continue;   // logo
+        mapH(H, (c + P[j]) / 3, (r + P[i]) / 3, pt);
+        var q = ((pt[1] | 0) * w + (pt[0] | 0)) * 4;
+        rs.push(data[q]); gs.push(data[q + 1]); bs.push(data[q + 2]);
+        sr += data[q]; sg += data[q + 1]; sb += data[q + 2]; n++;
+      }
+      sr /= n; sg /= n; sb /= n;
+      var spread = 0;
+      for (var m = 0; m < n; m++) spread += Math.abs(rs[m] - sr) + Math.abs(gs[m] - sg) + Math.abs(bs[m] - sb);
+      spread /= 3 * n;
+      cellV[k] = Math.max(sr, sg, sb);
+      if (!ctr) { even += Math.max(0, 1 - spread / (8 + 0.12 * cellV[k])); nEven++; }
+    }
+    var T = LV.T, A = LV.A, gap = 0, nGap = 0;
+    for (var g = 0; g < SEGMENTS.length; g++) {
+      var sg2 = SEGMENTS[g], L = sg2[3], H2 = Hs[sg2[0]];
+      if (frontOnly && sg2[1] < 9) continue;
+      var nu = L[1] === L[3] ? 0 : 1, nv = 1 - nu;   // across the line (unit-square direction)
+      var sum = 0;
+      for (var t = 0; t < T.length; t++) {
+        var u = L[0] + (L[2] - L[0]) * T[t], v = L[1] + (L[3] - L[1]) * T[t], lo = Infinity;
+        for (var a = 0; a < A.length; a++) {
+          mapH(H2, u + nu * A[a] / 3, v + nv * A[a] / 3, pt);
+          var val = V[(pt[1] | 0) * w + (pt[0] | 0)];
+          if (val < lo) lo = val;
+        }
+        sum += lo;
+      }
+      var gv = sum / T.length, mv = Math.min(cellV[sg2[1]], cellV[sg2[2]]);
+      gap += Math.max(-1, Math.min(1, (mv - gv) / (mv + 6)));
+      nGap++;
+    }
+    return 0.6 * gap / nGap + 0.4 * even / nEven;
+  }
+  function inside(quads, w, h) {
+    var all = quads.top.concat(quads.front);
+    for (var i = 0; i < all.length; i++) {
+      if (!(all[i][0] >= 1 && all[i][1] >= 1 && all[i][0] < w - 1 && all[i][1] < h - 1)) return false;
+    }
+    return true;
+  }
+
+  // The search works with the front face's centre (fx, fy) in place of the cube's centre, so that
+  // trying another tilt or turn leaves the front face where it is.
+  function fromFront(a, w, h) {
+    var p = { x: 0, y: 0, s: a.s, tilt: a.tilt, yaw: a.yaw, roll: a.roll, pz: a.pz }, R = rotation(p);
+    var X = R[0][2] * 1.5, Y = R[1][2] * 1.5, Z = R[2][2] * 1.5, d = 1 / (1 - a.pz * Z);
+    p.x = (a.fx - w / 2) / d + w / 2 - a.s * X;
+    p.y = (a.fy - h / 2) / d + h / 2 + a.s * Y;
+    return p;
+  }
+  function toFront(p, w, h) {
+    var f = project(p, rotation(p), w, h, [0, 0, 1.5]);
+    return { fx: f[0], fy: f[1], s: p.s, tilt: p.tilt, yaw: p.yaw, roll: p.roll, pz: p.pz };
+  }
+  function scoreA(fr, a, level, frontOnly) { return fitScore(fr, angledQuads(fromFront(a, fr.w, fr.h), fr.w, fr.h), level, frontOnly); }
+  function copyA(a) { return { fx: a.fx, fy: a.fy, s: a.s, tilt: a.tilt, yaw: a.yaw, roll: a.roll, pz: a.pz }; }
+  function copyFit(p) { return { x: p.x, y: p.y, s: p.s, tilt: p.tilt, yaw: p.yaw, roll: p.roll, pz: p.pz }; }
+
+  var SNAP_OK = 0.62;   // below this, nothing fits: the outline is dashed and nothing is read
+
+  // snapAngled(data, w, h, opts) -> { ok, fit, quads, score }. Looks around opts.around (where the
+  // outline is drawn; default: the default outline): 1. the front face over positions, sizes, two
+  // tilts and small sideways turns; 2. the best 16 are polished on the front face's gaps and
+  // ranked; 3. for the best 5, the top face over tilts of 15-50 degrees, sideways turns and
+  // perspective, keeping 3 clearly different tilts; 4. each is polished on all 24 inner gaps; the
+  // best by fitScore is finished on the sticker centres. ok: the fit looks enough like stickers.
+  function snapAngled(data, w, h, opts) {
+    opts = opts || {};
+    var base = opts.around || defaultFit(w, h), b0 = toFront(base, w, h);
+    var fr = { data: data, w: w, h: h, v: brightness(data, w, h, Math.max(1, Math.round(0.05 * base.s))), v1: brightness(data, w, h, 1) };
+    // opts.track: opts.around is the last frame's fit. A cube held still (or moved a little) is
+    // followed from there, which is far quicker than a search; the search is the fallback.
+    if (opts.track && opts.around) {
+      var tp = finish(fr, polish(fr, opts.around, 6), 2), tsc = fitScore(fr, angledQuads(tp, w, h), 2);
+      if (tsc >= SNAP_OK + 0.04) return { ok: true, fit: tp, quads: angledQuads(tp, w, h), score: tsc };
+    }
+    var fronts = [];
+    [0.7, 0.8, 0.9, 1, 1.12, 1.25, 1.4].forEach(function (k) {
+      var s = base.s * k, step = 0.3 * s, rx = Math.max(1.6 * base.s, 2 * step), ry = Math.max(1.3 * base.s, 2 * step);
+      for (var dx = -rx; dx <= rx + 1e-9; dx += step) for (var dy = -ry; dy <= ry + 1e-9; dy += step) {
+        var los = sight(b0.fx + dx, b0.fy + dy - 1.8 * s, w, h);
+        for (var t = 22; t <= 44; t += 22) {
+          [-6, 0, 6].forEach(function (yaw) {
+            var a = { fx: b0.fx + dx, fy: b0.fy + dy, s: s, tilt: t + los.up, yaw: yaw - los.right, roll: 0, pz: s / (0.8 * w) };
+            var sc = scoreA(fr, a, 0, true);
+            if (sc > 0.45) fronts.push({ a: a, sc: sc });
+          });
+        }
+      }
+    });
+    var polished = distinct(fronts, 16).map(function (f) {
+      var p = polish(fr, fromFront(f.a, w, h), 4, true);
+      return { a: toFront(p, w, h), sc: fitScore(fr, angledQuads(p, w, h), 2, true) };
+    });
+    var best = null;
+    distinct(polished, 5).forEach(function (c) {
+      topSearch(fr, c.a, 3).forEach(function (ts) {
+        var p0 = fromFront(ts, w, h), s0 = fitScore(fr, angledQuads(p0, w, h), 2);
+        var p = polish(fr, p0, 6), sc = fitScore(fr, angledQuads(p, w, h), 2);
+        if (sc < s0) { p = p0; sc = s0; }
+        if (!best || sc > best.sc) best = { p: p, sc: sc };
+      });
+    });
+    if (!best) { var d = copyFit(base); return { ok: false, fit: d, quads: angledQuads(d, w, h), score: 0 }; }
+    var p = finish(fr, best.p, 3), sc = fitScore(fr, angledQuads(p, w, h), 2);
+    if (sc < best.sc - 0.02) { p = best.p; sc = best.sc; }
+    return { ok: sc >= SNAP_OK, fit: p, quads: angledQuads(p, w, h), score: sc };
+  }
+  // With the front face in place, the top face over tilts, sideways turns and perspective: the n
+  // best of clearly different tilts, each to be polished.
+  function topSearch(fr, a, n) {
+    var pz0 = a.s / (0.8 * fr.w), list = [], los = sight(a.fx, a.fy - 1.8 * a.s, fr.w, fr.h);
+    for (var t = TILT_MIN - 2 + los.up; t <= TILT_MAX + 2 + los.up; t += 1.5) {
+      for (var yaw = -10 - los.right; yaw <= 10 - los.right; yaw += 2.5) {
+        [0.85, 1.15].forEach(function (k) {
+          var q = copyA(a); q.tilt = t; q.yaw = yaw; q.pz = pz0 * k;
+          list.push({ a: q, sc: scoreA(fr, q, 1) });
+        });
+      }
+    }
+    list.sort(function (x, y) { return y.sc - x.sc; });
+    var out = [];
+    for (var i = 0; i < list.length && out.length < n; i++) {
+      var q = list[i].a;
+      if (out.some(function (o) { return Math.abs(o.tilt - q.tilt) < 4; })) continue;
+      out.push(q);
+    }
+    return out;
+  }
+  // The n best candidates, skipping near-duplicates of better ones.
+  function distinct(list, n) {
+    list.sort(function (a, b) { return b.sc - a.sc; });
+    var out = [];
+    for (var i = 0; i < list.length && out.length < n; i++) {
+      var c = list[i].a;
+      if (out.some(function (o) { return Math.abs(o.a.fx - c.fx) < 0.4 * c.s && Math.abs(o.a.fy - c.fy) < 0.4 * c.s && Math.abs(o.a.s / c.s - 1) < 0.25; })) continue;
+      out.push(list[i]);
+    }
+    return out;
+  }
+
+  var LIMITS = { tilt: [TILT_MIN - 12, TILT_MAX + 17], yaw: [-28, 28], roll: [-15, 15], pz: [0, 0.15] };
+  // Tilt and sideways turn are as seen along the line of sight to the point (x, y) (for the tilt,
+  // about the top face's centre). The fit's angles are against the camera's axis, so a top face
+  // high in the picture (seen from lower down) needs more tilt, by `up` degrees, and a cube to the
+  // right less turn, by `right` (for a typical webcam's field of view).
+  function sight(x, y, w, h) {
+    var f = 0.8 * w;
+    return { up: Math.atan2(h / 2 - y, f) / RAD, right: Math.atan2(x - w / 2, f) / RAD };
+  }
+
+  // Sticker centres (16; the two centres are left out for logos) in cube coordinates.
+  var STICKER_PTS = [];
+  for (var sk = 0; sk < 18; sk++) {
+    if (sk % 9 === 4) continue;
+    var sr0 = Math.floor((sk % 9) / 3), sc0 = sk % 3;
+    STICKER_PTS.push({ k: sk, P: sk < 9 ? [sc0 - 1, 1.5, sr0 - 1] : [sc0 - 1, 1 - sr0, 1.5] });
+  }
+  function invH(H) {   // inverse of [[a b c][d e f][g h 1]], scaled so the last entry is 1
+    var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    var A = e - f * h, B = c * h - b, C = b * f - c * e, D = f * g - d, E = a - c * g, F = c * d - a * f, G = d * h - e * g, Hh = b * g - a * h, I = a * e - b * d;
+    return [A / I, B / I, C / I, D / I, E / I, F / I, G / I, Hh / I];
+  }
+  // Polish: find each gap where it really is (the darkest point across the grid line, within 0.4 of
+  // a sticker either side), then a damped least-squares (Levenberg-Marquardt) fit of the model to
+  // those points, a few times over. It needs no colours, so faces of one colour are no problem.
+  // front: the front face's gaps only (position, size, lean and, from its height, tilt).
+  function polish(fr, p0, iters, front) {
+    var p = copyFit(p0);
+    for (var iter = 0; iter < iters; iter++) {
+      var obs = gapPoints(fr, p, front);
+      if (obs.length < (front ? 8 : 16)) return p;
+      var next = fitPoints(obs, p, fr.w, fr.h, front ? ['x', 'y', 's', 'tilt', 'roll'] : ['x', 'y', 's', 'tilt', 'yaw', 'roll', 'pz']);
+      var moved = Math.abs(next.x - p.x) + Math.abs(next.y - p.y);
+      p = next;
+      if (moved < 0.05) break;
+    }
+    return p;
+  }
+  // Points along the 24 grid lines inside the faces: { P (cube point on the line), d (image
+  // direction across the line), x, y (where the gap's middle was found) }.
+  var SCAN = []; for (var sa = -0.4; sa <= 0.4001; sa += 0.04) SCAN.push(sa);
+  function gapPoints(fr, p, front) {
+    var w = fr.w, h = fr.h, V = fr.v1, quads = angledQuads(p, w, h), obs = [], pt = [0, 0], q2 = [0, 0];
+    var Hs = [squareToQuad(quads.top), squareToQuad(quads.front)];
+    SEGMENTS.forEach(function (sg) {
+      if (sg[1] >= 6 && sg[1] < 9 && sg[2] >= 9) return;   // the edge between the faces: two planes
+      if (front && sg[0] === 0) return;
+      var f = sg[0], L = sg[3], H = Hs[f], nu = L[1] === L[3] ? 0 : 1, nv = 1 - nu;
+      [0.3, 0.7].forEach(function (t) {
+        var u = L[0] + (L[2] - L[0]) * t, v = L[1] + (L[3] - L[1]) * t, vals = [], best = -1, lo = Infinity;
+        for (var i = 0; i < SCAN.length; i++) {
+          mapH(H, u + nu * SCAN[i] / 3, v + nv * SCAN[i] / 3, pt);
+          var x = pt[0] | 0, y = pt[1] | 0;
+          var val = x >= 0 && y >= 0 && x < w && y < h ? V[y * w + x] : Infinity;
+          vals.push(val);
+          if (val < lo) { lo = val; best = i; }
+        }
+        // A real gap: clearly darker than the stickers on both sides of it.
+        var left = Math.max.apply(null, vals.slice(0, Math.max(1, best))), right = Math.max.apply(null, vals.slice(best + 1).concat([-Infinity]));
+        if (best <= 0 || best >= SCAN.length - 1 || !(lo < 0.7 * Math.min(left, right))) return;
+        // The middle of the dark run: where it crosses half way to the stickers on either side.
+        var half = (lo + Math.min(left, right)) / 2, i0 = best, i1 = best;
+        while (i0 > 0 && vals[i0 - 1] < half) i0--;
+        while (i1 < SCAN.length - 1 && vals[i1 + 1] < half) i1++;
+        if (i0 === 0 || i1 === SCAN.length - 1) return;
+        var e0 = i0 - (half - vals[i0]) / (vals[i0 - 1] - vals[i0]), e1 = i1 + (half - vals[i1]) / (vals[i1 + 1] - vals[i1]);
+        var off = SCAN[0] + (e0 + e1) / 2 * 0.04;
+        mapH(H, u + nu * off / 3, v + nv * off / 3, pt);
+        mapH(H, u, v, q2);
+        var x0 = q2[0], y0 = q2[1];
+        mapH(H, u + nu * 0.01, v + nv * 0.01, q2);
+        var dx = q2[0] - x0, dy = q2[1] - y0, n = Math.sqrt(dx * dx + dy * dy) || 1;
+        obs.push({ P: facePoint(f, u, v), d: [dx / n, dy / n], x: pt[0], y: pt[1] });
+      });
+    });
+    return obs;
+  }
+  // Final touch, once the fit is close: the centroid of each sticker (pixels inside its cell that
+  // are bright and of its colour). Sharper than the gaps, but only right when the fit is close.
+  function finish(fr, p0, iters) {
+    var p = copyFit(p0);
+    for (var iter = 0; iter < iters; iter++) {
+      var obs = centroids(fr, p, 1);
+      if (obs.length < 20) return p;
+      p = fitPoints(obs, p, fr.w, fr.h, ['x', 'y', 's', 'tilt', 'yaw', 'roll', 'pz']);
+    }
+    return p;
+  }
+  function centroids(fr, p, st) {
+    var w = fr.w, h = fr.h, data = fr.data, quads = angledQuads(p, w, h);
+    var Hs = [squareToQuad(quads.top), squareToQuad(quads.front)], Hi = Hs.map(invH), obs = [], pt = [0, 0];
+    STICKER_PTS.forEach(function (sp) {
+      var k = sp.k, f = k < 9 ? 0 : 1, r = Math.floor((k % 9) / 3), c = k % 3, H = Hs[f];
+      var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      [[0, 0], [1, 0], [1, 1], [0, 1]].forEach(function (u) {
+        mapH(H, (c + u[0]) / 3, (r + u[1]) / 3, pt);
+        x0 = Math.min(x0, pt[0]); x1 = Math.max(x1, pt[0]); y0 = Math.min(y0, pt[1]); y1 = Math.max(y1, pt[1]);
+      });
+      x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(w - 1, Math.ceil(x1)); y1 = Math.min(h - 1, Math.ceil(y1));
+      var rs = [], gs = [], bs = [];
+      [[0.5, 0.5], [0.35, 0.35], [0.65, 0.35], [0.35, 0.65], [0.65, 0.65]].forEach(function (u) {
+        mapH(H, (c + u[0]) / 3, (r + u[1]) / 3, pt);
+        var q0 = ((pt[1] | 0) * w + (pt[0] | 0)) * 4;
+        if (q0 >= 0 && q0 < data.length) { rs.push(data[q0]); gs.push(data[q0 + 1]); bs.push(data[q0 + 2]); }
+      });
+      if (!rs.length) return;
+      var mr = median(rs), mg = median(gs), mb = median(bs), thr = 0.5 * Math.max(mr, mg, mb), tol = 60 * 60;
+      var sx = 0, sy = 0, n = 0, inv = Hi[f];
+      for (var y = y0; y <= y1; y += st) for (var x = x0; x <= x1; x += st) {
+        mapH(inv, x + 0.5, y + 0.5, pt);
+        var u = pt[0] * 3 - c, v = pt[1] * 3 - r;
+        if (u < 0.04 || u > 0.96 || v < 0.04 || v > 0.96) continue;
+        var q = (y * w + x) * 4, R = data[q], G = data[q + 1], B = data[q + 2];
+        if (Math.max(R, G, B) < thr || (R - mr) * (R - mr) + (G - mg) * (G - mg) + (B - mb) * (B - mb) > tol) continue;
+        sx += x + 0.5; sy += y + 0.5; n++;
+      }
+      if (n > 4) { obs.push({ P: sp.P, d: [1, 0], x: sx / n, y: sy / n }); obs.push({ P: sp.P, d: [0, 1], x: sx / n, y: sy / n }); }
+    });
+    return obs;
+  }
+  // Cube point of (u, v) in a face's unit square: top (back row at v = 0) or front.
+  function facePoint(f, u, v) { return f === 0 ? [3 * u - 1.5, 1.5, 3 * v - 1.5] : [3 * u - 1.5, 1.5 - 3 * v, 1.5]; }
+  // Levenberg-Marquardt over the parameters named in keys: each point's distance across its line.
+  function fitPoints(obs, p0, w, h, keys) {
+    var EPS = { x: 0.5, y: 0.5, s: 0.005 * p0.s, tilt: 0.2, yaw: 0.2, roll: 0.2, pz: 0.002 };
+    // The perspective is only loosely fixed by the points, so it is held near where it started
+    // (one pixel of residual per 25% change).
+    function resid(q) {
+      var R = rotation(q), out = [];
+      obs.forEach(function (o) { var m = project(q, R, w, h, o.P); out.push((m[0] - o.x) * o.d[0] + (m[1] - o.y) * o.d[1]); });
+      out.push((q.pz - p0.pz) / (0.25 * p0.pz + 1e-6));
+      return out;
+    }
+    function sq(r) { return r.reduce(function (a, v) { return a + v * v; }, 0); }
+    var p = copyFit(p0), r0 = resid(p), e0 = sq(r0), lambda = 1e-3;
+    for (var it = 0; it < 8; it++) {
+      var J = keys.map(function (key) {
+        var q = copyFit(p); q[key] += EPS[key];
+        return resid(q).map(function (v, i) { return (v - r0[i]) / EPS[key]; });
+      });
+      var n = keys.length, M = [], g = [];
+      for (var i = 0; i < n; i++) {
+        M.push([]);
+        g.push(-J[i].reduce(function (a, v, t) { return a + v * r0[t]; }, 0));
+        for (var j = 0; j < n; j++) M[i].push(J[i].reduce(function (a, v, t) { return a + v * J[j][t]; }, 0));
+      }
+      var moved = false;
+      for (var tries = 0; tries < 6 && !moved; tries++) {
+        var A = M.map(function (row, a) { return row.map(function (v, b) { return a === b ? v * (1 + lambda) + 1e-9 : v; }); });
+        var delta = solve(A, g);
+        if (!delta) return p;
+        var next = copyFit(p);
+        keys.forEach(function (key, k) { next[key] += delta[k]; });
+        Object.keys(LIMITS).forEach(function (key) { next[key] = Math.max(LIMITS[key][0], Math.min(LIMITS[key][1], next[key])); });
+        var r1 = resid(next), e1 = sq(r1);
+        if (e1 < e0) { p = next; r0 = r1; moved = e0 - e1 > 1e-4 * e0; e0 = e1; lambda = Math.max(1e-6, lambda / 4); if (!moved) return p; }
+        else lambda *= 8;
+      }
+      if (!moved) return p;
+    }
+    return p;
+  }
+  function solve(M, g) {   // Gaussian elimination with partial pivoting
+    var n = g.length, A = M.map(function (row, i) { return row.concat([g[i]]); });
+    for (var c = 0; c < n; c++) {
+      var piv = c;
+      for (var r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+      if (Math.abs(A[piv][c]) < 1e-12) return null;
+      var tmp = A[c]; A[c] = A[piv]; A[piv] = tmp;
+      for (var r2 = c + 1; r2 < n; r2++) {
+        var f = A[r2][c] / A[c][c];
+        for (var k = c; k <= n; k++) A[r2][k] -= f * A[c][k];
+      }
+    }
+    var x = new Array(n);
+    for (var i = n - 1; i >= 0; i--) {
+      var sum = A[i][n];
+      for (var j = i + 1; j < n; j++) sum -= A[i][j] * x[j];
+      x[i] = sum / A[i][i];
+    }
+    return x;
+  }
+
+  // readAngled(data, w, h, quads, opts) -> the 18 stickers of a snapped view.
+  //   cells[0..8]: top face, as seen from above with its far side at the top (like a capture of
+  //   that face); cells[9..17]: front face. Each is the median of the middle of the sticker (a
+  //   ring for the centre, so logos don't matter).
+  //   even[k], gaps (how many of the 27 places between stickers are dark), aligned (every cell even
+  //   and every gap dark: a part-turned layer breaks this), confidence (0..1), letters (nearest
+  //   colours, using opts.ref - this cube's scanned colours - when given).
+  //   settled: aligned and steady for opts.steadyMs (250) since opts.prev, the previous result,
+  //   at time opts.now (ms). since: when this steady, aligned stretch began.
+  function readAngled(data, w, h, quads, opts) {
+    opts = opts || {};
+    var Hs = [squareToQuad(quads.top), squareToQuad(quads.front)], pt = [0, 0];
+    function px(H, u, v) {
+      mapH(H, u, v, pt);
+      var x = Math.round(pt[0]), y = Math.round(pt[1]);
+      if (x < 0 || y < 0 || x >= w || y >= h) return -1;
+      return (y * w + x) * 4;
+    }
+    var cells = [], even = [], N = 7;
+    for (var k = 0; k < 18; k++) {
+      var H = Hs[k < 9 ? 0 : 1], r = Math.floor((k % 9) / 3), c = k % 3, ring = k % 9 === 4;
+      var half = ring ? 0.37 : 0.25, inner = 0.22, rs = [], gs = [], bs = [], mid = [];
+      for (var i = 0; i < N; i++) for (var j = 0; j < N; j++) {
+        var du = (j / (N - 1) * 2 - 1) * half, dv = (i / (N - 1) * 2 - 1) * half;
+        if (ring && Math.abs(du) < inner && Math.abs(dv) < inner) continue;
+        var q = px(H, (c + 0.5 + du) / 3, (r + 0.5 + dv) / 3);
+        if (q < 0) continue;
+        rs.push(data[q]); gs.push(data[q + 1]); bs.push(data[q + 2]);
+        if (Math.abs(du) <= 0.25 && Math.abs(dv) <= 0.25) mid.push(q);
+      }
+      var m = [median(rs), median(gs), median(bs)];
+      cells.push(m);
+      var near = 0;
+      mid.forEach(function (q2) {
+        var d0 = data[q2] - m[0], d1 = data[q2 + 1] - m[1], d2 = data[q2 + 2] - m[2];
+        if (d0 * d0 + d1 * d1 + d2 * d2 < 45 * 45) near++;
+      });
+      even.push(mid.length ? near / mid.length : 0);
+    }
+    // Gaps: at three places along each, the darkest of a narrow band across it, against the darker
+    // of the two stickers either side.
+    var gaps = 0, contrast = 0;
+    SEGMENTS.forEach(function (sg) {
+      var L = sg[3], H2 = Hs[sg[0]], nu = L[1] === L[3] ? 0 : 1, nv = 1 - nu;
+      var mv = Math.min(Math.max.apply(null, cells[sg[1]]), Math.max.apply(null, cells[sg[2]])), dark = 0, worst = 0;
+      [0.25, 0.5, 0.75].forEach(function (t) {
+        var u = L[0] + (L[2] - L[0]) * t, v = L[1] + (L[3] - L[1]) * t, lo = Infinity;
+        [-0.06, -0.03, 0, 0.03, 0.06].forEach(function (a) {
+          var q = px(H2, u + nu * a / 3, v + nv * a / 3);
+          if (q >= 0) lo = Math.min(lo, Math.max(data[q], data[q + 1], data[q + 2]));
+        });
+        if (lo < 0.6 * mv) dark++;
+        worst = Math.max(worst, lo);
+      });
+      if (dark === 3) gaps++;
+      contrast += Math.max(0, Math.min(1, (mv - worst) / (mv + 1)));
+    });
+    var evenOk = even.every(function (e, k) { return k % 9 === 4 || e >= 0.7; });
+    var aligned = evenOk && gaps === SEGMENTS.length;
+    var meanEven = even.reduce(function (a, e, k) { return k % 9 === 4 ? a : a + e; }, 0) / 16;
+    var confidence = Math.round(100 * meanEven * contrast / SEGMENTS.length) / 100;
+    var now = opts.now || 0, prev = opts.prev, since = null;
+    if (aligned) {
+      since = now;
+      if (prev && prev.aligned && prev.since != null && sameCells(prev.cells, cells, 8)) since = prev.since;
+    }
+    var steadyMs = opts.steadyMs || 250;
+    return {
+      cells: cells, even: even, gaps: gaps, aligned: aligned, confidence: confidence,
+      letters: cells.map(function (c) { return nearestRef(c, opts.ref); }),
+      since: since, settled: aligned && now - since >= steadyMs
+    };
+  }
+  function sameCells(a, b, tol) {
+    for (var k = 0; k < a.length; k++) if (dist(toLab(a[k]), toLab(b[k])) > tol) return false;
+    return true;
+  }
+
+  // This cube's own colours (Lab at full brightness), from a finished scan: ref[letter].
+  // captures as for assemble, state the assembled cube (white on top, green in front). Each
+  // capture's rotation is the one that best matches the state's colours on that face.
+  function reference(captures, state) {
+    var sums = {}, counts = {};
+    COLOR_LETTERS.forEach(function (c) { sums[c] = [0, 0, 0]; counts[c] = 0; });
+    STEPS.forEach(function (st, k) {
+      var labs = captures[k].map(function (c) { return toLab(fullBright(c)); }), best = null, bd = Infinity;
+      ROT.forEach(function (map) {
+        var d = 0;
+        for (var j = 0; j < 9; j++) d += dist(labs[j], PALETTE_LAB[state[BASE[st.face][map[j]]]]);
+        if (d < bd) { bd = d; best = map; }
+      });
+      for (var j = 0; j < 9; j++) {
+        var col = state[BASE[st.face][best[j]]];
+        for (var t = 0; t < 3; t++) sums[col][t] += labs[j][t];
+        counts[col]++;
+      }
+    });
+    var ref = {};
+    COLOR_LETTERS.forEach(function (c) { ref[c] = counts[c] ? sums[c].map(function (v) { return v / counts[c]; }) : PALETTE_LAB[c]; });
+    return ref;
+  }
+  function refLab(letter, ref) { return ref && ref[letter] ? ref[letter] : PALETTE_LAB[letter]; }
+  function nearestRef(rgb, ref) {
+    if (!ref) return nearestColor(rgb);
+    var lab = toLab(fullBright(rgb)), best = null, bd = Infinity;
+    COLOR_LETTERS.forEach(function (c) { var d = dist(lab, ref[c]); if (d < bd) { bd = d; best = c; } });
+    return best;
+  }
+
+  // quickSlots(read, filled, ref) -> [step for the top face, step for the front face]. The two
+  // faces shown are neighbours (never opposite colours) and different; of those pairs, the one whose
+  // colours best fit the two centre readings, preferring steps that are still empty (filled[k]).
+  function quickSlots(read, filled, ref) {
+    var lt = toLab(fullBright(read.cells[4])), lf = toLab(fullBright(read.cells[13])), best = null, bd = Infinity;
+    for (var a = 0; a < 6; a++) for (var b = 0; b < 6; b++) {
+      var fa = STEPS[a].face, fb = STEPS[b].face;
+      if (a === b || OPPOSITE[fa] === fb) continue;
+      var d = dist(lt, refLab(fa, ref)) + dist(lf, refLab(fb, ref)) + (filled && filled[a] ? WAY_OFF : 0) + (filled && filled[b] ? WAY_OFF : 0);
+      if (d < bd) { bd = d; best = [a, b]; }
+    }
+    return best;
+  }
+
+  // createAngledCapture() -> { feed(read, others) -> 'capture' | 'holding' | 'waiting', reset() }.
+  // Like createAutoCapture, for a readAngled result: captures a view that is aligned (every sticker
+  // even, every gap dark) and steady for STEADY frames, unless both faces were captured already;
+  // then waits for the cube to move.
+  function createAngledCapture(opts) {
+    opts = opts || {};
+    var STEADY = opts.steady || 3, prev = null, steady = 0, armed = true;
+    return {
+      feed: function (read, others) {
+        var cur = read ? read.cells.map(toLab) : null, diff = Infinity;
+        if (prev && cur) { diff = 0; for (var k = 0; k < 18; k++) diff = Math.max(diff, dist(prev[k], cur[k])); }
+        prev = cur;
+        if (!cur || diff > 25 && diff !== Infinity) armed = true;
+        if (!read || !armed || !(diff < 8) || !read.aligned) { steady = 0; return 'waiting'; }
+        var seen = function (cells) { return (others || []).some(function (o) { return o && sameFace(cells, o); }); };
+        if (seen(read.cells.slice(0, 9)) && seen(read.cells.slice(9))) { steady = 0; return 'waiting'; }
+        if (++steady < STEADY) return 'holding';
+        steady = 0; armed = false;
+        return 'capture';
+      },
+      reset: function () { prev = null; steady = 0; armed = true; }
+    };
+  }
+
   var Scan = {
     ORIENTATIONS: ORIENTATIONS,
     CENTERS: CENTERS,
@@ -3570,7 +4507,19 @@
     slotFor: slotFor,
     frameInfo: frameInfo,
     sameFace: sameFace,
-    createAutoCapture: createAutoCapture
+    createAutoCapture: createAutoCapture,
+    // Feature 9: angled view
+    TILT_MIN: TILT_MIN,
+    TILT_MAX: TILT_MAX,
+    defaultFit: defaultFit,
+    angledQuads: angledQuads,
+    squareToQuad: squareToQuad,
+    snapAngled: snapAngled,
+    readAngled: readAngled,
+    reference: reference,
+    nearestRef: nearestRef,
+    quickSlots: quickSlots,
+    createAngledCapture: createAngledCapture
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = Scan;
@@ -3588,6 +4537,7 @@
   var GRAY = '#4a4f59';
   var GUIDE = 0.6;          // guide square side, as a fraction of the shorter video side
   var TINT_MS = 250;        // live tint refresh
+  var PAIRS = [['U', 'F'], ['R', 'B'], ['D', 'L']];   // quick scan: suggested holds (top, front)
 
   var CSS = [
     '.sc-wrap{display:flex;flex-wrap:wrap;gap:16px;padding:16px;box-sizing:border-box;align-items:flex-start}',
@@ -3609,6 +4559,10 @@
     '.sc-btns button.sc-main:not(:disabled){background:#24497e;border-color:#3d7bdc}',
     '.sc-errs{margin:0;padding-left:18px;color:#ffb0b0;font-size:13px;line-height:1.45}',
     '.sc-ok{color:#3ddc84;font-size:14px}',
+    '.sc-fly{position:fixed;z-index:50;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:3px;pointer-events:none;box-sizing:border-box}',
+    '.sc-fly i{display:block;border-radius:4px;border:1px solid #0d0e11}',
+    '.sc-land{animation:sc-land 0.45s ease-out}',
+    '@keyframes sc-land{0%{box-shadow:0 0 0 3px #3ddc84}100%{box-shadow:0 0 0 0 transparent}}',
     '.sc-video{position:relative;background:#0d0e11;border-radius:8px;overflow:hidden;width:100%}',
     '.sc-video video{display:block;width:100%;height:auto}',
     '.sc-video video.sc-mirror{transform:scaleX(-1)}',
@@ -3625,6 +4579,20 @@
     '.sc-instr{font-size:14px;line-height:1.4;margin:0}',
     '.sc-instr b{color:#8fb8ff}',
     '.sc-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:#b8bec8}',
+    '.sc-outline{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}',
+    '.sc-outline.sc-mirror{transform:scaleX(-1)}',
+    '.sc-outline path{fill:none;stroke:rgba(255,255,255,0.9);stroke-width:2.5;stroke-linejoin:round;vector-effect:non-scaling-stroke}',
+    '.sc-outline path.sc-in{stroke-width:1.5;stroke:rgba(255,255,255,0.6)}',
+    '.sc-outline path.sc-shade{stroke:rgba(0,0,0,0.55);stroke-width:5}',
+    '.sc-outline.sc-lost path{stroke-dasharray:7 6}',
+    '.sc-outline.sc-hold path:not(.sc-shade){stroke:#ffd23d}',
+    '.sc-outline.sc-flash path:not(.sc-shade){stroke:#3ddc84}',
+    '.sc-ang{display:flex;align-items:center;gap:12px;font-size:13px;color:#b8bec8}',
+    '.sc-ang .sc-faces{display:flex;flex-direction:column;gap:7px}',
+    '.sc-ang .sc-face{display:grid;grid-template-columns:repeat(3,12px);grid-auto-rows:12px;gap:2px}',
+    '.sc-ang .sc-face i{display:block;border-radius:2px;background:#4a4f59}',
+    '.sc-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#555b66;margin-right:6px;vertical-align:-1px}',
+    '.sc-dot.on{background:#3ddc84;box-shadow:0 0 6px #3ddc84}',
     '@media (max-width:420px){.sc-net{--sz:calc((100vw - 90px) / 12)}}'
   ].join('\n');
 
@@ -3761,9 +4729,14 @@
     cam.style.maxWidth = '640px';
     wrap.appendChild(cam);
     cam.appendChild(el('h2', null, 'Scan with camera'));
-    cam.appendChild(el('p', 'sc-note', 'Fill the guide with one face and hold it still: it is captured by itself and ' +
+    var NOTE_SIX = 'Fill the guide with one face and hold it still: it is captured by itself and ' +
       'goes to the step of its centre colour, so any order works. Even, bright light works best. ' +
-      'Afterwards, check the net against your cube and fix any sticker.'));
+      'Afterwards, check the net against your cube and fix any sticker.';
+    var NOTE_QUICK = 'Hold the cube a little below the camera so it sees the top and front faces, and keep it still: ' +
+      'the outline locks onto the cube (solid lines) and both faces are captured by themselves. Three holds cover all six faces. ' +
+      'Even, bright light works best. Afterwards, check the net against your cube and fix any sticker.';
+    var camNote = el('p', 'sc-note', NOTE_SIX);
+    cam.appendChild(camNote);
 
     var camBtns = el('div', 'sc-btns');
     var startBtn = el('button', 'sc-main', 'Start camera');
@@ -3796,14 +4769,44 @@
     autoBox.checked = true;
     autoRow.appendChild(autoBox);
     autoRow.appendChild(document.createTextNode('Auto-capture a face held still'));
+    // Feature 9: quick scan, two faces per hold, read from the angled view.
+    var quickRow = el('label', 'sc-row');
+    var quickBox = el('input');
+    quickBox.type = 'checkbox';
+    quickRow.appendChild(quickBox);
+    quickRow.appendChild(document.createTextNode('Quick scan (3 holds): show the top and front faces together'));
+    var SVGNS = 'http://www.w3.org/2000/svg';
+    var outline = document.createElementNS(SVGNS, 'svg');
+    outline.setAttribute('class', 'sc-outline sc-lost');
+    outline.setAttribute('preserveAspectRatio', 'none');
+    var outlineShade = document.createElementNS(SVGNS, 'path'), outlineInner = document.createElementNS(SVGNS, 'path'), outlineEdge = document.createElementNS(SVGNS, 'path');
+    outlineShade.setAttribute('class', 'sc-shade');
+    outlineInner.setAttribute('class', 'sc-in');
+    [outlineShade, outlineInner, outlineEdge].forEach(function (pth) { outline.appendChild(pth); });
+    videoBox.appendChild(outline);
+    var angEl = el('div', 'sc-ang'), angFaces = el('div', 'sc-faces'), angDots = [];
+    angFaces.title = 'The 18 stickers read right now: the top face above, the front face below';
+    [0, 1].forEach(function () {
+      var g2 = el('div', 'sc-face');
+      for (var j = 0; j < 9; j++) { var d2 = el('i'); angDots.push(d2); g2.appendChild(d2); }
+      angFaces.appendChild(g2);
+    });
+    var angState = el('span'), angDot = el('span', 'sc-dot');
+    var angText = el('div');
+    angText.appendChild(angDot);
+    angText.appendChild(angState);
+    angEl.appendChild(angFaces);
+    angEl.appendChild(angText);
     var camMsg = el('p', 'sc-note');
 
     cam.appendChild(stepsEl);
     cam.appendChild(instr);
     cam.appendChild(seenEl);
     cam.appendChild(videoBox);
+    cam.appendChild(angEl);
     cam.appendChild(mirrorRow);
     cam.appendChild(autoRow);
+    cam.appendChild(quickRow);
     cam.appendChild(camBtns);
     cam.appendChild(camMsg);
 
@@ -3811,6 +4814,10 @@
     var stepIdx = 0;
     var stream = null, tintTimer = 0, visible = false;
     var auto = Scan.createAutoCapture(), autoDone = false, flashTimer = 0, lockTried = false;
+    // Quick scan state: the last snapped fit (followed from frame to frame), the last reading, how
+    // many holds were captured, and this cube's own colours once it has been scanned.
+    var quickAuto = Scan.createAngledCapture(), lastFit = null, lostTicks = 0, lastRead = null, lastSnap = null, holds = 0;
+    var reference = null;
     var canvas = el('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     Scan.STEPS.forEach(function (st, k) {
@@ -3832,9 +4839,15 @@
       resetScanBtn.disabled = captures.every(function (c) { return !c; });
       videoBox.style.display = mirrorRow.style.display = autoRow.style.display = running ? '' : 'none';
       video.classList.toggle('sc-mirror', mirrorBox.checked);
+      var quick = quickBox.checked;
+      camNote.textContent = quick ? NOTE_QUICK : NOTE_SIX;
+      guide.style.display = quick ? 'none' : '';
+      outline.style.display = quick ? '' : 'none';
+      angEl.style.display = running && quick ? '' : 'none';
+      outline.classList.toggle('sc-mirror', mirrorBox.checked);
       chips.forEach(function (c, k) {
         var st = Scan.STEPS[k];
-        c.el.classList.toggle('on', k === stepIdx);
+        c.el.classList.toggle('on', k === stepIdx && !quickBox.checked);
         var cap = captures[k];
         Array.prototype.forEach.call(c.mini.children, function (dot, j) {
           dot.style.background = cap ? hex(Scan.nearestColor(cap[j])) : j === 4 ? hex(st.face) : GRAY;
@@ -3842,12 +4855,29 @@
       });
       var st = Scan.STEPS[stepIdx];
       instr.textContent = '';
-      instr.appendChild(el('b', null, 'Step ' + (stepIdx + 1) + ' of 6: '));
       seenEl.style.display = running ? '' : 'none';
-      instr.appendChild(document.createTextNode(st.text));
+      if (quick) {
+        var missing = Scan.STEPS.filter(function (s2, k) { return !captures[k]; }).map(function (s2) { return s2.face; });
+        var pair = PAIRS.filter(function (pr) { return missing.indexOf(pr[0]) >= 0 || missing.indexOf(pr[1]) >= 0; })[0];
+        var names = function (list) { return list.map(function (f) { return Cube.COLOR_NAME[f]; }).join(', '); };
+        instr.appendChild(el('b', null, missing.length ? 'Hold ' + Math.min(3, holds + 1) + ' of 3: ' : 'Quick scan: '));
+        instr.appendChild(document.createTextNode(missing.length
+          ? 'Hold the cube in the outline, a little below the camera, so the top and front faces show' +
+            (pair ? ' (for example the ' + Cube.COLOR_NAME[pair[0]] + ' and ' + Cube.COLOR_NAME[pair[1]] + ' centres)' : '') +
+            ', either face on top, any way up. Still missing: ' + names(missing) + '.'
+          : 'all six centres are scanned.'));
+      } else {
+        instr.appendChild(el('b', null, 'Step ' + (stepIdx + 1) + ' of 6: '));
+        instr.appendChild(document.createTextNode(st.text));
+      }
       placeGuide();
     }
     mirrorBox.addEventListener('change', renderCam);
+    quickBox.addEventListener('change', function () {
+      auto.reset(); quickAuto.reset(); lastFit = null; lastRead = null; lastSnap = null;
+      guide.classList.remove('sc-hold');
+      renderCam();
+    });
 
     function placeGuide() {
       var w = videoBox.clientWidth, h = video.clientHeight;
@@ -3861,19 +4891,102 @@
     video.addEventListener('loadedmetadata', placeGuide);
 
     // Reads the guide's 9 cells from the current frame (camera cell order, unmirrored).
-    function readFrame(maxW) {
+    function grabFrame(maxW) {
       var vw = video.videoWidth, vh = video.videoHeight;
       if (!vw || !vh) return null;
       var k = Math.min(1, maxW / vw), w = Math.round(vw * k), h = Math.round(vh * k);
       canvas.width = w; canvas.height = h;
       ctx.drawImage(video, 0, 0, w, h);
-      var size = GUIDE * Math.min(w, h);
-      var data = ctx.getImageData(0, 0, w, h).data;
-      return Scan.frameInfo(data, w, h, (w - size) / 2, (h - size) / 2, size);
+      return { data: ctx.getImageData(0, 0, w, h).data, w: w, h: h };
+    }
+    function readFrame(maxW) {
+      var fr = grabFrame(maxW);
+      if (!fr) return null;
+      var size = GUIDE * Math.min(fr.w, fr.h);
+      return Scan.frameInfo(fr.data, fr.w, fr.h, (fr.w - size) / 2, (fr.h - size) / 2, size);
+    }
+
+    // ---- Quick scan (Feature 9) ----
+    // Each tick: snap the outline to the cube (following the last fit while it holds), read the 18
+    // stickers, show the outline, the mini-view and whether the view is settled, and auto-capture.
+    function quickTick() {
+      var fr = grabFrame(640);
+      if (!fr) return;
+      var sn = Scan.snapAngled(fr.data, fr.w, fr.h, lastFit ? { around: lastFit, track: true } : null);
+      if (sn.ok) { lastFit = sn.fit; lostTicks = 0; } else if (++lostTicks > 2) lastFit = null;
+      var read = sn.ok ? Scan.readAngled(fr.data, fr.w, fr.h, sn.quads, { prev: lastRead, now: Date.now(), ref: reference }) : null;
+      lastRead = read;
+      lastSnap = { quads: sn.ok ? sn.quads : Scan.angledQuads(lastFit || Scan.defaultFit(fr.w, fr.h), fr.w, fr.h), ok: sn.ok, w: fr.w, h: fr.h };
+      drawOutline();
+      renderAngled(read);
+      var both = read && [read.cells.slice(0, 9), read.cells.slice(9)].every(function (f) {
+        return captures.some(function (c) { return c && Scan.sameFace(f, c); });
+      });
+      seenEl.textContent = !read ? 'Camera sees: no cube in the outline yet' : 'Camera sees: ' + Cube.COLOR_NAME[read.letters[4]] + ' centre on top, ' +
+        Cube.COLOR_NAME[read.letters[13]] + ' in front' + (both ? ' (already scanned)' : '');
+      if (!autoBox.checked || autoDone) { outline.classList.remove('sc-hold'); return; }
+      var st = quickAuto.feed(read, captures);
+      outline.classList.toggle('sc-hold', st === 'holding');
+      if (st === 'capture') quickCapture(read);
+    }
+
+    // The outline where it snapped (dashed where nothing fits): both faces and their 3x3 grids.
+    function drawOutline() {
+      if (!lastSnap) return;
+      var q = lastSnap.quads, edge = '', inner = '';
+      function pt(p) { return p[0].toFixed(1) + ' ' + p[1].toFixed(1); }
+      [q.top, q.front].forEach(function (quad) {
+        edge += 'M' + quad.map(pt).join('L') + 'Z';
+        var H = Scan.squareToQuad(quad);
+        function at(u, v) { var z = H[6] * u + H[7] * v + 1; return [(H[0] * u + H[1] * v + H[2]) / z, (H[3] * u + H[4] * v + H[5]) / z]; }
+        [1 / 3, 2 / 3].forEach(function (t) { inner += 'M' + pt(at(t, 0)) + 'L' + pt(at(t, 1)) + 'M' + pt(at(0, t)) + 'L' + pt(at(1, t)); });
+      });
+      outline.setAttribute('viewBox', '0 0 ' + lastSnap.w + ' ' + lastSnap.h);
+      outlineShade.setAttribute('d', edge);
+      outlineEdge.setAttribute('d', edge);
+      outlineInner.setAttribute('d', inner);
+      outline.classList.toggle('sc-lost', !lastSnap.ok);
+    }
+
+    function renderAngled(read) {
+      angDots.forEach(function (d, k) { d.style.background = read ? hex(read.letters[k]) : GRAY; });
+      angDot.classList.toggle('on', !!(read && read.settled));
+      angState.textContent = !read ? 'Not settled: no cube in the outline' : read.settled ? 'Settled' :
+        read.aligned ? 'Settling…' : 'Not settled: hold still with the layers lined up';
+    }
+
+    // Where a face of the outline is on the page (for the capture animation).
+    function quadRect(quad) {
+      var box = videoBox.getBoundingClientRect(), k = box.width / lastSnap.w;
+      var xs = quad.map(function (p) { return mirrorBox.checked ? lastSnap.w - p[0] : p[0]; }), ys = quad.map(function (p) { return p[1]; });
+      var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+      return { left: box.left + x0 * k, top: box.top + y0 * k, width: (x1 - x0) * k, height: (y1 - y0) * k };
+    }
+
+    // A hold's two faces go to the steps of their centre colours (neighbours, preferring steps not
+    // yet scanned); once all six are in, the net is filled.
+    function quickCapture(read) {
+      if (!read) { camMsg.textContent = 'No cube in the outline yet: hold it so that the outline locks on (solid lines), then try again.'; return; }
+      var slots = Scan.quickSlots(read, captures.map(function (c) { return !!c; }), reference);
+      var faces = [read.cells.slice(0, 9), read.cells.slice(9)];
+      captures[slots[0]] = faces[0];
+      captures[slots[1]] = faces[1];
+      holds++;
+      lockCamera();
+      outline.classList.remove('sc-hold');
+      outline.classList.add('sc-flash');
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(function () { outline.classList.remove('sc-flash'); }, 500);
+      flyToNet(slots[0], faces[0], quadRect(lastSnap.quads.top));
+      flyToNet(slots[1], faces[1], quadRect(lastSnap.quads.front));
+      if (captures.indexOf(null) < 0) finishScan();
+      else camMsg.textContent = '';
+      renderCam();
     }
 
     function tint() {
       if (!stream) return;
+      if (quickBox.checked) { quickTick(); return; }
       var info = readFrame(320);
       if (!info) return;
       var cellsRead = info.cells;
@@ -3950,6 +5063,8 @@
       clearInterval(tintTimer);
       tintTimer = 0;
       auto.reset();
+      quickAuto.reset(); lastFit = null; lastRead = null; lastSnap = null;
+      outline.classList.remove('sc-hold');
       lockTried = false;
       guide.classList.remove('sc-hold');
       if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
@@ -3966,6 +5081,7 @@
     }
 
     function capture() {
+      if (quickBox.checked) { quickCapture(lastRead); return; }
       var read = readFrame(640);
       if (!read) { camMsg.textContent = 'The camera has no picture yet; try again in a moment.'; return; }
       var slot = Scan.slotFor(read.cells[4], allowedSlots(), stepIdx);
@@ -3976,19 +5092,69 @@
       guide.classList.add('sc-flash');
       clearTimeout(flashTimer);
       flashTimer = setTimeout(function () { guide.classList.remove('sc-flash'); }, 500);
+      flyToNet(slot, read.cells);
       var missing = captures.indexOf(null);
       if (missing < 0) {
-        var res = Scan.assemble(captures);
-        setNet(res.state);
-        camMsg.textContent = 'All six faces scanned and the net is filled in' +
-          (res.rearranged ? ' (some faces were turned or misread and were put right)' : '') +
-          '. Check it against your cube, fix any sticker, then Load.';
-        autoDone = true;
+        finishScan();
       } else {
         stepIdx = captures.indexOf(null, stepIdx) >= 0 ? captures.indexOf(null, stepIdx) : missing;
         camMsg.textContent = '';
       }
       renderCam();
+    }
+
+    // All six faces are in: classify and assemble them into the net. A valid result also becomes
+    // this cube's colour reference for later quick-scan readings.
+    function finishScan() {
+      var res = Scan.assemble(captures);
+      setNet(res.state);
+      var ok = Scan.validate(res.state).ok;
+      if (ok) reference = Scan.reference(captures, res.state);
+      camMsg.textContent = (quickBox.checked ? 'All six faces scanned in ' + holds + (holds === 1 ? ' hold' : ' holds') + ' and the net is filled in'
+        : 'All six faces scanned and the net is filled in' + (res.rearranged ? ' (some faces were turned or misread and were put right)' : '')) +
+        '. Check it against your cube, fix any sticker, then Load.';
+      autoDone = true;
+    }
+
+    // Capture animation: the face lifts off the guide (or its place in the outline) and flies into
+    // its place in the net, where it lands as a preview (the final assembly may still turn it).
+    function flyToNet(slot, readCells, fromRect) {
+      var cols = readCells.map(function (c) { return Scan.nearestColor(c); });
+      var face = Scan.STEPS[slot].cells;   // facelets in the suggested hold
+      function land() {
+        if (captures[slot] !== readCells) return;   // rescanned or reset meanwhile
+        // Once all six are in, the net already holds the assembled cube: just mark where it landed.
+        if (captures.indexOf(null) >= 0) {
+          face.forEach(function (fi, k) { if (k !== 4) net[fi] = cols[k]; });
+          render();
+        }
+        face.forEach(function (fi) {
+          cells[fi].classList.remove('sc-land');
+          void cells[fi].offsetWidth;
+          cells[fi].classList.add('sc-land');
+        });
+      }
+      var reduce = root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var from = fromRect || guide.getBoundingClientRect(), a = cells[face[0]].getBoundingClientRect(), b = cells[face[8]].getBoundingClientRect();
+      if (reduce || !from.width || !a.width || !guide.animate) { land(); return; }
+      var fly = el('div', 'sc-fly');
+      cols.forEach(function (c, k) {
+        var dot = el('i');
+        dot.style.background = hex(k === 4 ? Scan.STEPS[slot].face : c);
+        fly.appendChild(dot);
+      });
+      fly.style.left = from.left + 'px'; fly.style.top = from.top + 'px';
+      fly.style.width = from.width + 'px'; fly.style.height = from.height + 'px';
+      document.body.appendChild(fly);
+      var to = { left: a.left, top: a.top, width: b.right - a.left, height: b.bottom - a.top };
+      var dx = to.left - from.left, dy = to.top - from.top, sx = to.width / from.width, sy = to.height / from.height;
+      var anim = fly.animate([
+        { transform: 'translate(0,0) scale(1)', boxShadow: '0 0 0 rgba(0,0,0,0)', opacity: 1, offset: 0 },
+        { transform: 'translate(0,-14px) scale(1.06) rotate(-3deg)', boxShadow: '0 18px 30px rgba(0,0,0,0.55)', opacity: 1, offset: 0.25 },
+        { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(' + sx + ',' + sy + ')', boxShadow: '0 0 0 rgba(0,0,0,0)', opacity: 0.9, offset: 1 }
+      ], { duration: 650, easing: 'cubic-bezier(0.5,0,0.3,1)' });
+      fly.style.transformOrigin = '0 0';
+      anim.onfinish = anim.oncancel = function () { fly.remove(); land(); };
     }
 
     startBtn.addEventListener('click', startCamera);
@@ -3999,6 +5165,8 @@
       stepIdx = 0;
       autoDone = false;
       auto.reset();
+      quickAuto.reset();
+      holds = 0;
       camMsg.textContent = '';
       renderCam();
     });
@@ -4014,7 +5182,8 @@
       setNet: setNet,
       validate: function () { return Scan.validate(net); },
       captures: function () { return captures.slice(); },
-      isCameraOn: function () { return !!stream; }
+      isCameraOn: function () { return !!stream; },
+      quickView: function () { return { snapped: !!(lastSnap && lastSnap.ok), quads: lastSnap && lastSnap.quads, read: lastRead, holds: holds }; }
     };
   }
 
@@ -4418,19 +5587,22 @@
   // Race ghost (Feature 6): the digital cube solving itself while the user solves a real one.
   var ghost = { id: 0, solution: null, waiting: false, active: false, plan: null, idx: 0, t0: 0, target: 0 };
   function ghostBusy() { return ghost.waiting || ghost.active; }
+  // A race runs from the space hold (or inspection) until I stop: the ghost stops then too.
+  function racing() { return (timing && ui.timer.isRace()) || ghostBusy(); }
 
   // ---------------------------------------------------------------------------
-  // Solver worker. Built from the inlined core + solver source so it works from file://.
+  // Workers, built from the inlined core + module source so they work from file://.
+  // makeWorker(id, name): a worker running the script with that id, which defines the global `name`.
   // ---------------------------------------------------------------------------
-  var solver = (function () {
-    var src = $('src-core').textContent + '\n;\n' + $('src-solver').textContent;
+  function makeWorker(id, name) {
+    var src = $('src-core').textContent + '\n;\n' + $(id).textContent;
     var pending = {};
     var nextId = 1;
     var worker = null;
     try {
       var body = src + '\n;self.onmessage = function (e) {\n' +
         '  var out = { id: e.data.id };\n' +
-        '  try { out.hint = Solver[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
+        '  try { out.hint = ' + name + '[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
         '  self.postMessage(out);\n' +
         '};\n';
       var url = URL.createObjectURL(new Blob([body], { type: 'text/javascript' }));
@@ -4445,35 +5617,39 @@
       fallback();
     }
 
-    // If workers are unavailable, run the solver on the main thread (it is fast, ~ms per hint).
+    // If workers are unavailable, run on the main thread (hints take ~ms; scramble tables ~1 s once).
     function fallback() {
       if (worker) { worker.terminate(); worker = null; }
-      if (!window.Solver) (0, eval)($('src-solver').textContent);
-      Object.keys(pending).forEach(function (id) { run(+id, pending[id].state); });
+      if (!window[name]) (0, eval)($(id).textContent);
+      Object.keys(pending).forEach(function (k) { run(+k, pending[k].state); });
     }
-    function run(id, state) {
+    function run(k, state) {
       setTimeout(function () {
-        var cb = pending[id];
+        var cb = pending[k];
         if (!cb) return;
-        delete pending[id];
-        try { cb(null, window.Solver[cb.fn](state)); } catch (err) { cb(String(err && err.message || err), null); }
+        delete pending[k];
+        try { cb(null, window[name][cb.fn](state)); } catch (err) { cb(String(err && err.message || err), null); }
       }, 0);
     }
 
-    // call('getHint' | 'solve', state, cb(err, result))
-    function call(fn, state, cb) {
-      var id = nextId++;
+    // call(fn, state, cb(err, result))
+    return function call(fn, state, cb) {
+      var k = nextId++;
       cb.state = state;
       cb.fn = fn;
-      pending[id] = cb;
-      if (worker) worker.postMessage({ id: id, fn: fn, state: state });
-      else run(id, state);
-    }
-    return {
-      getHint: function (state, cb) { call('getHint', state, cb); },
-      solve: function (state, cb) { call('solve', state, cb); }
+      pending[k] = cb;
+      if (worker) worker.postMessage({ id: k, fn: fn, state: state });
+      else run(k, state);
     };
-  })();
+  }
+  var solverCall = makeWorker('src-solver', 'Solver');
+  var solver = {
+    getHint: function (state, cb) { solverCall('getHint', state, cb); },
+    solve: function (state, cb) { solverCall('solve', state, cb); }
+  };
+  // Scrambles for loaded cubes (two-phase solver): its own worker, so its one-off table build
+  // never delays hints, Solve or the race ghost.
+  var scrambleCall = makeWorker('src-twophase', 'TwoPhase');
 
   // ---------------------------------------------------------------------------
   // Hint panel
@@ -4485,7 +5661,8 @@
   var stale = true;       // hint no longer matches the cube
   var requestId = 0;
 
-  function hintsVisible() { return hintsOn && !timing && !ghostBusy() && tab === 'cube'; }
+  // Hints stay available during a normal timed solve, but not during a race.
+  function hintsVisible() { return hintsOn && !racing() && tab === 'cube'; }
 
   function refreshHints() {
     hintsBtn.textContent = 'Hints: ' + (hintsOn ? 'on' : 'off');
@@ -4628,10 +5805,8 @@
 
   var ui = Timer.mount($('timer'), {
     applyScramble: function (moves) {
-      // The ghost is still solving: scramble once it has finished.
-      if (mounted && ghostBusy()) { cancelPendingScramble(); pendingScramble = moves; return; }
-      // After a solve, leave the solved cube visible for a moment before scrambling.
-      if (mounted && ui && ui.timer.state === 'stopped' && Cube.isSolved(app.getState())) {
+      // After a solve, leave the solved cube (or, after a race, the ghost's cube) visible for a moment.
+      if (mounted && ui && ui.timer.state === 'stopped' && (Cube.isSolved(app.getState()) || ui.timer.isRace())) {
         delayScramble(moves);
         return;
       }
@@ -4640,6 +5815,7 @@
     // Inspection, the space hold and the solve itself all count as timing.
     onActiveChange: function (active) {
       timing = active;
+      if (!active) stopGhost();   // I stopped (or DNF'd) first: the ghost stops where it is
       updateBusy();
     },
     raceBlocked: function () {
@@ -4667,17 +5843,16 @@
     raceCancel: function () { ghost.id++; ghost.waiting = false; updateBusy(); }
   });
 
-  // Buttons, tabs, hints and keys while timing or racing. During a race the cube keys are off too,
-  // until the ghost has finished.
+  // Buttons, tabs and keys while timing or racing. Hints and the cube keys are off only in a race.
   function updateBusy() {
-    var racing = (timing && ui.timer.isRace()) || ghostBusy();
-    var busy = timing || racing;
+    var race = racing();
+    var busy = timing || race;
     app.setButtonsEnabled(!busy);
     tabAlgs.disabled = busy;
     tabScan.disabled = busy;
-    hintsBtn.disabled = busy;
+    hintsBtn.disabled = race;
     keysBtn.disabled = busy;
-    app.setKeysEnabled(tab === 'cube' && !racing && !keysPanel.isOpen());
+    app.setKeysEnabled(tab === 'cube' && !race && !keysPanel.isOpen());
     ui.setGhostBusy(ghostBusy());
     refreshHints();
   }
@@ -4708,7 +5883,16 @@
     ghost.active = false;
     ui.ghostFinished(performance.now() - ghost.t0);
     updateBusy();
-    if (pendingScramble && timerIdle()) delayScramble(pendingScramble);
+  }
+  // My timer stopped while the ghost was still solving: freeze the digital cube where it is
+  // (the turn in motion finishes, nothing else plays) and report the ghost's scheduled finish.
+  function stopGhost() {
+    if (!ghostBusy()) return;
+    var at = ghost.active ? ghost.plan.total : ghost.target;   // no plan yet: the target
+    ghost.id++;                // drop a solution still being worked out
+    ghost.waiting = ghost.active = false;
+    app.dropQueued();
+    ui.ghostStopped(at);
   }
   mounted = true;
   applyTimerScramble(ui.timer.scramble);   // the cube matches the scramble shown on load
@@ -4736,8 +5920,17 @@
       scrambling = false;
       app.reset(state);
       invalidateHint();
+      scrambleLoaded(state);
       setTab('cube');
     }
+  });
+
+  // Feature 4 "Loading": the timer shows (and saves with the next solve) a face-turn scramble that
+  // gives the loaded cube. If the cube changes before it arrives, the result is dropped.
+  var scrambleLoaded = Timer.createLoadScramble({
+    compute: function (state, cb) { scrambleCall('scramble', state, cb); },
+    currentState: function () { return app.getQueuedState(); },
+    panel: ui
   });
 
   function setTab(name) {
@@ -4767,7 +5960,6 @@
   window.addEventListener('keydown', function (e) {
     if (isSpace(e)) {
       e.preventDefault();
-      if (tab === 'cube' && timerIdle() && ghostBusy()) return;   // the ghost is still solving
       if (tab === 'cube' && timerIdle() && (scrambleTimer || scrambling)) {
         // Don't start inspection or a hold until the next scramble is on the cube.
         if (scrambleTimer) applyTimerScramble(pendingScramble);
@@ -4781,7 +5973,7 @@
     if (e.key === 'Escape') { ui.keyDown(e); return; }
     if (e.repeat || e.ctrlKey || e.metaKey) return;
     if (e.target && e.target.tagName === 'INPUT') return;     // typing a race target
-    if ((timing && ui.timer.isRace()) || ghostBusy()) return;  // racing: the cube is busy
+    if (racing()) return;   // racing: the cube keys and H are off
     var action = keyAction(e);
     if (action === 'hints') { e.preventDefault(); if (!hintsBtn.disabled) toggleHints(); return; }
     // A cube key queues a move: the layer highlight would be stale while it animates,

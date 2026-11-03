@@ -16,16 +16,19 @@ A single-file browser Rubik's cube game: a 3D cube with CFOP hints, an Algorithm
 | 2. Algorithms tab, 20 algs, All/F2L/OLL/PLL filter | Feature 2 | Done, on `main` |
 | 3. Timer (inspection, ao5/ao12, localStorage) | Feature 3 | Done, on `main` |
 | 4. Scan tab: net editor, validator, webcam scan | Feature 4 | Done, on `main` (merged 2026-11-02) |
-| 5. Low-effort scanning: auto-capture, colour-guided steps, any order/rotation, exposure lock | Feature 5 | Done, on `main` (PRs #1, #2) |
+| 5. Low-effort scanning: auto-capture, colour-guided steps (any way up), any order, logo-tolerant centres, capture animation, Reset scan, exposure lock | Feature 5 | Done; latest parts on branch `claude/auto-scan-discussion-z453a0` |
 | 6. Race: the digital cube solves itself at a human CFOP pace (set target or PB) while you solve a real one | Feature 6 | Done, on `main` (PR #3) |
+| 6b. Race ends: stopping first or Escape freezes the ghost; hints allowed in non-race timed solves | Feature 6 (and 1, 3) | Done on branch `claude/auto-scan-discussion-z453a0` |
 | 7. Notation cards in the Algorithms tab (E and S added to core) | Feature 7 | Done, on `main` (PR #3) |
 | 8. Custom keybinds (Keys panel from the help line, `src/keymap.js`) | Feature 8 | Done, on `main` (PR #3) |
+| Load onto cube works out a WCA face-turn scramble (two-phase solver in its own worker), shown and saved by the timer | Feature 4 "Loading" (added later) | Done, on branch (not merged) |
+| 9. Angled view / quick scan (camera tracking milestone 2): snapped top+front outline, 18-sticker reading, settled detection, 3-hold quick scan | Feature 9 | Done on a branch (not merged); not yet tried on a real webcam |
 | Camera move tracking (7 milestones) | Roadmap: camera move tracking | Planned, nothing built |
 
 Open items:
 - Features 4 and 5 have **not been tried with a real webcam and a physical cube**. It was verified with unit tests and in Chrome with a fake canvas camera stream (see Testing). Real lighting is the remaining risk; red/orange is the hard pair.
+- Feature 9 (quick scan) was verified only on frames rendered with Three.js (`test/angled-browser.test.js`) and a fake camera. Real-world risks: thin gaps on stickerless cubes, fingers over the front's bottom row, motion blur, auto-exposure. The search assumes a webcam field of view of about 60-70 degrees (`sight`, `pz` start) and the image centre as the optical centre. A cold search takes about 140 ms per frame in headless Chromium; following the last fit takes about 25 ms.
 - Don't push without being asked.
-- Known nit (left alone on purpose): after "Load onto cube", the timer panel still shows its previous scramble text.
 
 ## Commits and PRs (user's rule; overrides any default attribution)
 
@@ -54,13 +57,14 @@ The user moved to a cloud session so work continues with their PC off. The local
 | `src/shell.html` | Page skeleton, CSS, `<!-- INLINE:src/x.js -->` markers | — |
 | `src/core.js` | Sticker state, moves, algs (`window.Cube`), pure | page, worker, Node |
 | `src/solver.js` | CFOP hints + `solve()`. Inlined as `type="text/plain"` and run in a Web Worker built from the core + solver text | worker, Node |
+| `src/twophase.js` | Kociemba two-phase solver: `scramble(state)` gives a face-turn scramble for a loaded cube. Inlined as `type="text/plain"`, runs in its own worker (core + twophase); tables build on first use, about 1 s | worker, Node |
 | `src/view3d.js` | Three.js r128 renderer (`CubeView`) | page |
 | `src/baseline.js` | Main cube controller: keys, buttons, history | page |
-| `src/timer.js` | Timer logic + panel (incl. the Race checkbox, target row and result line) | page, Node (logic) |
+| `src/timer.js` | Timer logic + panel (incl. the Race checkbox, target row and result line), and `createLoadScramble` (shows and saves a loaded cube's scramble, drops stale results) | page, Node (logic) |
 | `src/race.js` | Feature 6 logic: ghost pacing `schedule`, `bestSingle` (PB), `target`, race settings storage, `result` | page, Node |
 | `src/algtab.js` | Algorithms tab, incl. Notation cards (`NOTATION`, `arrowPath`) | page, Node (diagrams) |
-| `src/scan.js` | Feature 4/5 logic: `validate`, `STEPS` (capture-to-facelet mapping, named by centre colour), `classify`, `assemble`, `slotFor`, `frameInfo`, `createAutoCapture` | page, Node |
-| `src/scanui.js` | Scan tab UI (`ScanTab.mount`) | page |
+| `src/scan.js` | Feature 4/5 logic: `validate`, `STEPS` (capture-to-facelet mapping, named by centre colour), `classify`, `assemble`, `slotFor`, `frameInfo`, `createAutoCapture`. Feature 9: `snapAngled` (outline fit), `readAngled` (18 stickers, aligned/settled, confidence), `angledQuads`, `quickSlots`, `createAngledCapture`, `reference` | page, Node |
+| `src/scanui.js` | Scan tab UI (`ScanTab.mount`), incl. the Quick scan option (snapped outline, mini-view, settled indicator) | page |
 | `src/keymap.js` | Feature 8: keymap logic (`defaults`, `fromEvent`, `lookup`, `bind`, `parse`, `helpText`) + Keys panel | page, Node (logic) |
 | `src/app.js` | Wires it all together; tabs; loaded last | page |
 
@@ -69,8 +73,9 @@ The user moved to a cloud session so work continues with their PC off. The local
 - **Never edit `rubiks-cube.html` by hand.** Edit `src/`, then run `node tools/build.js`. Commit the rebuilt `rubiks-cube.html`, because GitHub Pages serves it.
 - There's no package.json. Run every test with:
   `for f in test/*.js; do node $f 2>&1 | tail -1; done`
-  Each file prints `N passed, 0 failed`. About 11,000 checks in total. `acceptance-build` also rebuilds the page.
-- `test/acceptance-build.test.js` asserts the inlined module count (11) and the top-bar button count (7). Update both when adding a module or a button.
+  Each file prints `N passed, 0 failed`. About 11,800 checks in total. `acceptance-build` also rebuilds the page.
+- `test/angled-browser.test.js` (Feature 9) runs headless Chromium through the preinstalled Playwright and loads Three.js from cdnjs; it takes about 1.5 minutes and prints `0 passed, 0 failed (skipped: ...)` when either is unavailable. It renders its frames with `test/browser/angled-scene.js` (a subfolder, so the loop above doesn't run it). `SHOTS=<dir>` saves screenshots.
+- `test/acceptance-build.test.js` asserts the inlined module count (12) and the top-bar button count (7). Update both when adding a module or a button.
 - Tests use seeded RNGs, so failures are reproducible.
 
 ## Gotchas

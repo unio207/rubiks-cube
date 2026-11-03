@@ -7,6 +7,7 @@
   var GRAY = '#4a4f59';
   var GUIDE = 0.6;          // guide square side, as a fraction of the shorter video side
   var TINT_MS = 250;        // live tint refresh
+  var PAIRS = [['U', 'F'], ['R', 'B'], ['D', 'L']];   // quick scan: suggested holds (top, front)
 
   var CSS = [
     '.sc-wrap{display:flex;flex-wrap:wrap;gap:16px;padding:16px;box-sizing:border-box;align-items:flex-start}',
@@ -28,6 +29,10 @@
     '.sc-btns button.sc-main:not(:disabled){background:#24497e;border-color:#3d7bdc}',
     '.sc-errs{margin:0;padding-left:18px;color:#ffb0b0;font-size:13px;line-height:1.45}',
     '.sc-ok{color:#3ddc84;font-size:14px}',
+    '.sc-fly{position:fixed;z-index:50;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:3px;pointer-events:none;box-sizing:border-box}',
+    '.sc-fly i{display:block;border-radius:4px;border:1px solid #0d0e11}',
+    '.sc-land{animation:sc-land 0.45s ease-out}',
+    '@keyframes sc-land{0%{box-shadow:0 0 0 3px #3ddc84}100%{box-shadow:0 0 0 0 transparent}}',
     '.sc-video{position:relative;background:#0d0e11;border-radius:8px;overflow:hidden;width:100%}',
     '.sc-video video{display:block;width:100%;height:auto}',
     '.sc-video video.sc-mirror{transform:scaleX(-1)}',
@@ -44,6 +49,20 @@
     '.sc-instr{font-size:14px;line-height:1.4;margin:0}',
     '.sc-instr b{color:#8fb8ff}',
     '.sc-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:#b8bec8}',
+    '.sc-outline{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}',
+    '.sc-outline.sc-mirror{transform:scaleX(-1)}',
+    '.sc-outline path{fill:none;stroke:rgba(255,255,255,0.9);stroke-width:2.5;stroke-linejoin:round;vector-effect:non-scaling-stroke}',
+    '.sc-outline path.sc-in{stroke-width:1.5;stroke:rgba(255,255,255,0.6)}',
+    '.sc-outline path.sc-shade{stroke:rgba(0,0,0,0.55);stroke-width:5}',
+    '.sc-outline.sc-lost path{stroke-dasharray:7 6}',
+    '.sc-outline.sc-hold path:not(.sc-shade){stroke:#ffd23d}',
+    '.sc-outline.sc-flash path:not(.sc-shade){stroke:#3ddc84}',
+    '.sc-ang{display:flex;align-items:center;gap:12px;font-size:13px;color:#b8bec8}',
+    '.sc-ang .sc-faces{display:flex;flex-direction:column;gap:7px}',
+    '.sc-ang .sc-face{display:grid;grid-template-columns:repeat(3,12px);grid-auto-rows:12px;gap:2px}',
+    '.sc-ang .sc-face i{display:block;border-radius:2px;background:#4a4f59}',
+    '.sc-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#555b66;margin-right:6px;vertical-align:-1px}',
+    '.sc-dot.on{background:#3ddc84;box-shadow:0 0 6px #3ddc84}',
     '@media (max-width:420px){.sc-net{--sz:calc((100vw - 90px) / 12)}}'
   ].join('\n');
 
@@ -180,9 +199,14 @@
     cam.style.maxWidth = '640px';
     wrap.appendChild(cam);
     cam.appendChild(el('h2', null, 'Scan with camera'));
-    cam.appendChild(el('p', 'sc-note', 'Fill the guide with one face and hold it still: it is captured by itself and ' +
+    var NOTE_SIX = 'Fill the guide with one face and hold it still: it is captured by itself and ' +
       'goes to the step of its centre colour, so any order works. Even, bright light works best. ' +
-      'Afterwards, check the net against your cube and fix any sticker.'));
+      'Afterwards, check the net against your cube and fix any sticker.';
+    var NOTE_QUICK = 'Hold the cube a little below the camera so it sees the top and front faces, and keep it still: ' +
+      'the outline locks onto the cube (solid lines) and both faces are captured by themselves. Three holds cover all six faces. ' +
+      'Even, bright light works best. Afterwards, check the net against your cube and fix any sticker.';
+    var camNote = el('p', 'sc-note', NOTE_SIX);
+    cam.appendChild(camNote);
 
     var camBtns = el('div', 'sc-btns');
     var startBtn = el('button', 'sc-main', 'Start camera');
@@ -215,14 +239,44 @@
     autoBox.checked = true;
     autoRow.appendChild(autoBox);
     autoRow.appendChild(document.createTextNode('Auto-capture a face held still'));
+    // Feature 9: quick scan, two faces per hold, read from the angled view.
+    var quickRow = el('label', 'sc-row');
+    var quickBox = el('input');
+    quickBox.type = 'checkbox';
+    quickRow.appendChild(quickBox);
+    quickRow.appendChild(document.createTextNode('Quick scan (3 holds): show the top and front faces together'));
+    var SVGNS = 'http://www.w3.org/2000/svg';
+    var outline = document.createElementNS(SVGNS, 'svg');
+    outline.setAttribute('class', 'sc-outline sc-lost');
+    outline.setAttribute('preserveAspectRatio', 'none');
+    var outlineShade = document.createElementNS(SVGNS, 'path'), outlineInner = document.createElementNS(SVGNS, 'path'), outlineEdge = document.createElementNS(SVGNS, 'path');
+    outlineShade.setAttribute('class', 'sc-shade');
+    outlineInner.setAttribute('class', 'sc-in');
+    [outlineShade, outlineInner, outlineEdge].forEach(function (pth) { outline.appendChild(pth); });
+    videoBox.appendChild(outline);
+    var angEl = el('div', 'sc-ang'), angFaces = el('div', 'sc-faces'), angDots = [];
+    angFaces.title = 'The 18 stickers read right now: the top face above, the front face below';
+    [0, 1].forEach(function () {
+      var g2 = el('div', 'sc-face');
+      for (var j = 0; j < 9; j++) { var d2 = el('i'); angDots.push(d2); g2.appendChild(d2); }
+      angFaces.appendChild(g2);
+    });
+    var angState = el('span'), angDot = el('span', 'sc-dot');
+    var angText = el('div');
+    angText.appendChild(angDot);
+    angText.appendChild(angState);
+    angEl.appendChild(angFaces);
+    angEl.appendChild(angText);
     var camMsg = el('p', 'sc-note');
 
     cam.appendChild(stepsEl);
     cam.appendChild(instr);
     cam.appendChild(seenEl);
     cam.appendChild(videoBox);
+    cam.appendChild(angEl);
     cam.appendChild(mirrorRow);
     cam.appendChild(autoRow);
+    cam.appendChild(quickRow);
     cam.appendChild(camBtns);
     cam.appendChild(camMsg);
 
@@ -230,6 +284,10 @@
     var stepIdx = 0;
     var stream = null, tintTimer = 0, visible = false;
     var auto = Scan.createAutoCapture(), autoDone = false, flashTimer = 0, lockTried = false;
+    // Quick scan state: the last snapped fit (followed from frame to frame), the last reading, how
+    // many holds were captured, and this cube's own colours once it has been scanned.
+    var quickAuto = Scan.createAngledCapture(), lastFit = null, lostTicks = 0, lastRead = null, lastSnap = null, holds = 0;
+    var reference = null;
     var canvas = el('canvas'), ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     Scan.STEPS.forEach(function (st, k) {
@@ -251,9 +309,15 @@
       resetScanBtn.disabled = captures.every(function (c) { return !c; });
       videoBox.style.display = mirrorRow.style.display = autoRow.style.display = running ? '' : 'none';
       video.classList.toggle('sc-mirror', mirrorBox.checked);
+      var quick = quickBox.checked;
+      camNote.textContent = quick ? NOTE_QUICK : NOTE_SIX;
+      guide.style.display = quick ? 'none' : '';
+      outline.style.display = quick ? '' : 'none';
+      angEl.style.display = running && quick ? '' : 'none';
+      outline.classList.toggle('sc-mirror', mirrorBox.checked);
       chips.forEach(function (c, k) {
         var st = Scan.STEPS[k];
-        c.el.classList.toggle('on', k === stepIdx);
+        c.el.classList.toggle('on', k === stepIdx && !quickBox.checked);
         var cap = captures[k];
         Array.prototype.forEach.call(c.mini.children, function (dot, j) {
           dot.style.background = cap ? hex(Scan.nearestColor(cap[j])) : j === 4 ? hex(st.face) : GRAY;
@@ -261,12 +325,29 @@
       });
       var st = Scan.STEPS[stepIdx];
       instr.textContent = '';
-      instr.appendChild(el('b', null, 'Step ' + (stepIdx + 1) + ' of 6: '));
       seenEl.style.display = running ? '' : 'none';
-      instr.appendChild(document.createTextNode(st.text));
+      if (quick) {
+        var missing = Scan.STEPS.filter(function (s2, k) { return !captures[k]; }).map(function (s2) { return s2.face; });
+        var pair = PAIRS.filter(function (pr) { return missing.indexOf(pr[0]) >= 0 || missing.indexOf(pr[1]) >= 0; })[0];
+        var names = function (list) { return list.map(function (f) { return Cube.COLOR_NAME[f]; }).join(', '); };
+        instr.appendChild(el('b', null, missing.length ? 'Hold ' + Math.min(3, holds + 1) + ' of 3: ' : 'Quick scan: '));
+        instr.appendChild(document.createTextNode(missing.length
+          ? 'Hold the cube in the outline, a little below the camera, so the top and front faces show' +
+            (pair ? ' (for example the ' + Cube.COLOR_NAME[pair[0]] + ' and ' + Cube.COLOR_NAME[pair[1]] + ' centres)' : '') +
+            ', either face on top, any way up. Still missing: ' + names(missing) + '.'
+          : 'all six centres are scanned.'));
+      } else {
+        instr.appendChild(el('b', null, 'Step ' + (stepIdx + 1) + ' of 6: '));
+        instr.appendChild(document.createTextNode(st.text));
+      }
       placeGuide();
     }
     mirrorBox.addEventListener('change', renderCam);
+    quickBox.addEventListener('change', function () {
+      auto.reset(); quickAuto.reset(); lastFit = null; lastRead = null; lastSnap = null;
+      guide.classList.remove('sc-hold');
+      renderCam();
+    });
 
     function placeGuide() {
       var w = videoBox.clientWidth, h = video.clientHeight;
@@ -280,19 +361,102 @@
     video.addEventListener('loadedmetadata', placeGuide);
 
     // Reads the guide's 9 cells from the current frame (camera cell order, unmirrored).
-    function readFrame(maxW) {
+    function grabFrame(maxW) {
       var vw = video.videoWidth, vh = video.videoHeight;
       if (!vw || !vh) return null;
       var k = Math.min(1, maxW / vw), w = Math.round(vw * k), h = Math.round(vh * k);
       canvas.width = w; canvas.height = h;
       ctx.drawImage(video, 0, 0, w, h);
-      var size = GUIDE * Math.min(w, h);
-      var data = ctx.getImageData(0, 0, w, h).data;
-      return Scan.frameInfo(data, w, h, (w - size) / 2, (h - size) / 2, size);
+      return { data: ctx.getImageData(0, 0, w, h).data, w: w, h: h };
+    }
+    function readFrame(maxW) {
+      var fr = grabFrame(maxW);
+      if (!fr) return null;
+      var size = GUIDE * Math.min(fr.w, fr.h);
+      return Scan.frameInfo(fr.data, fr.w, fr.h, (fr.w - size) / 2, (fr.h - size) / 2, size);
+    }
+
+    // ---- Quick scan (Feature 9) ----
+    // Each tick: snap the outline to the cube (following the last fit while it holds), read the 18
+    // stickers, show the outline, the mini-view and whether the view is settled, and auto-capture.
+    function quickTick() {
+      var fr = grabFrame(640);
+      if (!fr) return;
+      var sn = Scan.snapAngled(fr.data, fr.w, fr.h, lastFit ? { around: lastFit, track: true } : null);
+      if (sn.ok) { lastFit = sn.fit; lostTicks = 0; } else if (++lostTicks > 2) lastFit = null;
+      var read = sn.ok ? Scan.readAngled(fr.data, fr.w, fr.h, sn.quads, { prev: lastRead, now: Date.now(), ref: reference }) : null;
+      lastRead = read;
+      lastSnap = { quads: sn.ok ? sn.quads : Scan.angledQuads(lastFit || Scan.defaultFit(fr.w, fr.h), fr.w, fr.h), ok: sn.ok, w: fr.w, h: fr.h };
+      drawOutline();
+      renderAngled(read);
+      var both = read && [read.cells.slice(0, 9), read.cells.slice(9)].every(function (f) {
+        return captures.some(function (c) { return c && Scan.sameFace(f, c); });
+      });
+      seenEl.textContent = !read ? 'Camera sees: no cube in the outline yet' : 'Camera sees: ' + Cube.COLOR_NAME[read.letters[4]] + ' centre on top, ' +
+        Cube.COLOR_NAME[read.letters[13]] + ' in front' + (both ? ' (already scanned)' : '');
+      if (!autoBox.checked || autoDone) { outline.classList.remove('sc-hold'); return; }
+      var st = quickAuto.feed(read, captures);
+      outline.classList.toggle('sc-hold', st === 'holding');
+      if (st === 'capture') quickCapture(read);
+    }
+
+    // The outline where it snapped (dashed where nothing fits): both faces and their 3x3 grids.
+    function drawOutline() {
+      if (!lastSnap) return;
+      var q = lastSnap.quads, edge = '', inner = '';
+      function pt(p) { return p[0].toFixed(1) + ' ' + p[1].toFixed(1); }
+      [q.top, q.front].forEach(function (quad) {
+        edge += 'M' + quad.map(pt).join('L') + 'Z';
+        var H = Scan.squareToQuad(quad);
+        function at(u, v) { var z = H[6] * u + H[7] * v + 1; return [(H[0] * u + H[1] * v + H[2]) / z, (H[3] * u + H[4] * v + H[5]) / z]; }
+        [1 / 3, 2 / 3].forEach(function (t) { inner += 'M' + pt(at(t, 0)) + 'L' + pt(at(t, 1)) + 'M' + pt(at(0, t)) + 'L' + pt(at(1, t)); });
+      });
+      outline.setAttribute('viewBox', '0 0 ' + lastSnap.w + ' ' + lastSnap.h);
+      outlineShade.setAttribute('d', edge);
+      outlineEdge.setAttribute('d', edge);
+      outlineInner.setAttribute('d', inner);
+      outline.classList.toggle('sc-lost', !lastSnap.ok);
+    }
+
+    function renderAngled(read) {
+      angDots.forEach(function (d, k) { d.style.background = read ? hex(read.letters[k]) : GRAY; });
+      angDot.classList.toggle('on', !!(read && read.settled));
+      angState.textContent = !read ? 'Not settled: no cube in the outline' : read.settled ? 'Settled' :
+        read.aligned ? 'Settling…' : 'Not settled: hold still with the layers lined up';
+    }
+
+    // Where a face of the outline is on the page (for the capture animation).
+    function quadRect(quad) {
+      var box = videoBox.getBoundingClientRect(), k = box.width / lastSnap.w;
+      var xs = quad.map(function (p) { return mirrorBox.checked ? lastSnap.w - p[0] : p[0]; }), ys = quad.map(function (p) { return p[1]; });
+      var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+      return { left: box.left + x0 * k, top: box.top + y0 * k, width: (x1 - x0) * k, height: (y1 - y0) * k };
+    }
+
+    // A hold's two faces go to the steps of their centre colours (neighbours, preferring steps not
+    // yet scanned); once all six are in, the net is filled.
+    function quickCapture(read) {
+      if (!read) { camMsg.textContent = 'No cube in the outline yet: hold it so that the outline locks on (solid lines), then try again.'; return; }
+      var slots = Scan.quickSlots(read, captures.map(function (c) { return !!c; }), reference);
+      var faces = [read.cells.slice(0, 9), read.cells.slice(9)];
+      captures[slots[0]] = faces[0];
+      captures[slots[1]] = faces[1];
+      holds++;
+      lockCamera();
+      outline.classList.remove('sc-hold');
+      outline.classList.add('sc-flash');
+      clearTimeout(flashTimer);
+      flashTimer = setTimeout(function () { outline.classList.remove('sc-flash'); }, 500);
+      flyToNet(slots[0], faces[0], quadRect(lastSnap.quads.top));
+      flyToNet(slots[1], faces[1], quadRect(lastSnap.quads.front));
+      if (captures.indexOf(null) < 0) finishScan();
+      else camMsg.textContent = '';
+      renderCam();
     }
 
     function tint() {
       if (!stream) return;
+      if (quickBox.checked) { quickTick(); return; }
       var info = readFrame(320);
       if (!info) return;
       var cellsRead = info.cells;
@@ -369,6 +533,8 @@
       clearInterval(tintTimer);
       tintTimer = 0;
       auto.reset();
+      quickAuto.reset(); lastFit = null; lastRead = null; lastSnap = null;
+      outline.classList.remove('sc-hold');
       lockTried = false;
       guide.classList.remove('sc-hold');
       if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
@@ -385,6 +551,7 @@
     }
 
     function capture() {
+      if (quickBox.checked) { quickCapture(lastRead); return; }
       var read = readFrame(640);
       if (!read) { camMsg.textContent = 'The camera has no picture yet; try again in a moment.'; return; }
       var slot = Scan.slotFor(read.cells[4], allowedSlots(), stepIdx);
@@ -395,19 +562,69 @@
       guide.classList.add('sc-flash');
       clearTimeout(flashTimer);
       flashTimer = setTimeout(function () { guide.classList.remove('sc-flash'); }, 500);
+      flyToNet(slot, read.cells);
       var missing = captures.indexOf(null);
       if (missing < 0) {
-        var res = Scan.assemble(captures);
-        setNet(res.state);
-        camMsg.textContent = 'All six faces scanned and the net is filled in' +
-          (res.rearranged ? ' (some faces were turned or misread and were put right)' : '') +
-          '. Check it against your cube, fix any sticker, then Load.';
-        autoDone = true;
+        finishScan();
       } else {
         stepIdx = captures.indexOf(null, stepIdx) >= 0 ? captures.indexOf(null, stepIdx) : missing;
         camMsg.textContent = '';
       }
       renderCam();
+    }
+
+    // All six faces are in: classify and assemble them into the net. A valid result also becomes
+    // this cube's colour reference for later quick-scan readings.
+    function finishScan() {
+      var res = Scan.assemble(captures);
+      setNet(res.state);
+      var ok = Scan.validate(res.state).ok;
+      if (ok) reference = Scan.reference(captures, res.state);
+      camMsg.textContent = (quickBox.checked ? 'All six faces scanned in ' + holds + (holds === 1 ? ' hold' : ' holds') + ' and the net is filled in'
+        : 'All six faces scanned and the net is filled in' + (res.rearranged ? ' (some faces were turned or misread and were put right)' : '')) +
+        '. Check it against your cube, fix any sticker, then Load.';
+      autoDone = true;
+    }
+
+    // Capture animation: the face lifts off the guide (or its place in the outline) and flies into
+    // its place in the net, where it lands as a preview (the final assembly may still turn it).
+    function flyToNet(slot, readCells, fromRect) {
+      var cols = readCells.map(function (c) { return Scan.nearestColor(c); });
+      var face = Scan.STEPS[slot].cells;   // facelets in the suggested hold
+      function land() {
+        if (captures[slot] !== readCells) return;   // rescanned or reset meanwhile
+        // Once all six are in, the net already holds the assembled cube: just mark where it landed.
+        if (captures.indexOf(null) >= 0) {
+          face.forEach(function (fi, k) { if (k !== 4) net[fi] = cols[k]; });
+          render();
+        }
+        face.forEach(function (fi) {
+          cells[fi].classList.remove('sc-land');
+          void cells[fi].offsetWidth;
+          cells[fi].classList.add('sc-land');
+        });
+      }
+      var reduce = root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var from = fromRect || guide.getBoundingClientRect(), a = cells[face[0]].getBoundingClientRect(), b = cells[face[8]].getBoundingClientRect();
+      if (reduce || !from.width || !a.width || !guide.animate) { land(); return; }
+      var fly = el('div', 'sc-fly');
+      cols.forEach(function (c, k) {
+        var dot = el('i');
+        dot.style.background = hex(k === 4 ? Scan.STEPS[slot].face : c);
+        fly.appendChild(dot);
+      });
+      fly.style.left = from.left + 'px'; fly.style.top = from.top + 'px';
+      fly.style.width = from.width + 'px'; fly.style.height = from.height + 'px';
+      document.body.appendChild(fly);
+      var to = { left: a.left, top: a.top, width: b.right - a.left, height: b.bottom - a.top };
+      var dx = to.left - from.left, dy = to.top - from.top, sx = to.width / from.width, sy = to.height / from.height;
+      var anim = fly.animate([
+        { transform: 'translate(0,0) scale(1)', boxShadow: '0 0 0 rgba(0,0,0,0)', opacity: 1, offset: 0 },
+        { transform: 'translate(0,-14px) scale(1.06) rotate(-3deg)', boxShadow: '0 18px 30px rgba(0,0,0,0.55)', opacity: 1, offset: 0.25 },
+        { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(' + sx + ',' + sy + ')', boxShadow: '0 0 0 rgba(0,0,0,0)', opacity: 0.9, offset: 1 }
+      ], { duration: 650, easing: 'cubic-bezier(0.5,0,0.3,1)' });
+      fly.style.transformOrigin = '0 0';
+      anim.onfinish = anim.oncancel = function () { fly.remove(); land(); };
     }
 
     startBtn.addEventListener('click', startCamera);
@@ -418,6 +635,8 @@
       stepIdx = 0;
       autoDone = false;
       auto.reset();
+      quickAuto.reset();
+      holds = 0;
       camMsg.textContent = '';
       renderCam();
     });
@@ -433,7 +652,8 @@
       setNet: setNet,
       validate: function () { return Scan.validate(net); },
       captures: function () { return captures.slice(); },
-      isCameraOn: function () { return !!stream; }
+      isCameraOn: function () { return !!stream; },
+      quickView: function () { return { snapped: !!(lastSnap && lastSnap.ok), quads: lastSnap && lastSnap.quads, read: lastRead, holds: holds }; }
     };
   }
 

@@ -151,8 +151,17 @@ r = R.result({ time: 7500, penalty: '+2' }, 8020);
 check('result: +2 counts against the user', r.winner === 'ghost' && /9\.50\+.*Ghost won by 1\.48/.test(r.text), r.text);
 r = R.result({ time: 7500, penalty: 'DNF' }, 8020);
 check('result: DNF loses', r.winner === 'ghost' && /DNF/.test(r.text), r.text);
-r = R.result({ time: 6000, penalty: 'none' }, null);
-check('result: ghost still solving -> user won', r.winner === 'you' && /still solving/.test(r.text), r.text);
+// I stopped first: the ghost was stopped and the margin is against its scheduled finish.
+r = R.result({ time: 9390, penalty: 'none' }, null, 12000);
+check('result: stopped first -> user won against the scheduled finish',
+  r.winner === 'you' && r.margin === 2610 && r.text === 'You 9.39  ·  Ghost would have finished at 12.00  ·  You won by 2.61 s.', r.text);
+r = R.result({ time: 12004, penalty: 'none' }, null, 12000);
+check('result: stopped first but at the scheduled finish -> tie', r.winner === 'tie', r.text);
+r = R.result({ time: 4000, penalty: 'DNF' }, null, 12000);
+check('result: Escape (DNF) with the ghost stopped -> ghost wins',
+  r.winner === 'ghost' && r.text === 'You DNF(4.00)  ·  Ghost would have finished at 12.00  ·  DNF: ghost wins.', r.text);
+r = R.result({ time: 0, penalty: 'DNF' }, null);
+check('result: inspection DNF before the ghost started', r.winner === 'ghost' && /DNF: ghost wins/.test(r.text), r.text);
 r = R.result({ time: 8020, penalty: 'none' }, 8025);
 check('result: tie when the shown times match', r.winner === 'tie', r.text);
 r = R.result({ time: 9420.8, penalty: 'none' }, 8044.6);
