@@ -235,6 +235,21 @@ check('nearestColor', S.nearestColor([240, 100, 20]) === 'L' && S.nearestColor([
     });
   });
   check('slotFor picks the step of the centre colour', miss.length === 0, miss);
+  // The step being asked for wins unless the centre is clearly another colour.
+  var bluish = [175, 190, 220];   // white centre with a blue logo, read as a mix
+  check('slotFor keeps the asked step for a logo-tinted centre', S.slotFor(bluish, all, 4) === 4, S.slotFor(bluish, all));
+  check('slotFor: asked green, shown red goes to red', S.slotFor(TRUE.R, all, 0) === 1);
+  check('slotFor: asked red, shown orange goes to orange', S.slotFor(TRUE.L, all, 1) === 3);
+  check('slotFor: asked white, shown yellow goes to yellow', S.slotFor(TRUE.D, all, 4) === 5);
+  // Assembling ignores a logo-tinted centre reading when the faces are on their steps.
+  var logoOk = 0;
+  for (var lk = 0; lk < 30; lk++) {
+    var ls = std(randomState(30)), lr = camera(ls, LIGHTS.neutral);   // held as instructed
+    var lc = S.STEPS.map(function (sp) { return sp.cells.map(function (f) { return lr[f]; }); });
+    lc[4] = lc[4].slice(); lc[4][4] = [120, 140, 200];   // white centre, logo-heavy reading
+    if (C.isEqual(S.assemble(lc).state, ls)) logoOk++;
+  }
+  check('assemble ignores a logo on the white centre', logoOk === 30, logoOk);
   check('slotFor picks among allowed steps only', S.slotFor(TRUE.R, [2, 3, 5]) === 3);   // red read, red step full: orange
 })();
 
@@ -252,6 +267,7 @@ check('nearestColor', S.nearestColor([240, 100, 20]) === 'L' && S.nearestColor([
         c = (opts.gap === false || inX > 3 && inX < CELL - 4 && inY > 3 && inY < CELL - 4)
           ? faceCols[Math.floor(cy / CELL) * 3 + Math.floor(cx / CELL)] : [15, 15, 18];
       }
+      if (opts.logo && Math.abs(cx - 60) < 9 && Math.abs(cy - 60) < 7) c = (x + y) % 3 ? [40, 70, 150] : [90, 90, 100];
       if (opts.noisy) c = c.map(function (v) { return clamp(v + (rnd() - 0.5) * 140); });
       data[p] = c[0]; data[p + 1] = c[1]; data[p + 2] = c[2]; data[p + 3] = 255;
     }
@@ -288,6 +304,13 @@ check('nearestColor', S.nearestColor([240, 100, 20]) === 'L' && S.nearestColor([
   check('blank wall not captured', count(run(n(image(null), 8))) === 0);
   var moving = []; for (var i = 0; i < 10; i++) moving.push(image(i % 2 ? faceA : faceB));
   check('moving view not captured', count(run(moving)) === 0);
+  // A logo on the centre cap (GAN): the centre still reads as its colour, and the face is captured.
+  var white = scr.slice(0, 9).map(function (c) { return TRUE[c]; }); white[4] = TRUE.U;
+  var logo = image(white, { logo: true });
+  check('logo: centre reads its colour', S.nearestColor(logo.cells[4]) === 'U', logo.cells[4]);
+  check('logo: face with a logo is captured', count(run(n(logo, 6))) === 1);
+  var uniLogo = image([0, 1, 2, 3, 4, 5, 6, 7, 8].map(function () { return TRUE.U; }), { logo: true });
+  check('logo: solved white face with a logo is captured', count(run(n(uniLogo, 6))) === 1);
   check('noisy view not captured', count(run([0, 1, 2, 3, 4, 5].map(function () { return image(faceA, { noisy: true }); }))) === 0);
 })();
 
