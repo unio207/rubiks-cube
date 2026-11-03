@@ -1044,6 +1044,7 @@
       enqueue: enqueue,
       isIdle: function () { return !current && queue.length === 0; },
       clearQueue: function () { queue = []; },
+      currentMove: function () { return current ? current.move : null; },   // the turn in motion, or null
       highlightLayer: highlightLayer,
       setFocus: function (m) { setFocus(m); },
       setArrow: function (p) { setArrow(p); },
@@ -1477,6 +1478,15 @@
       updateSolved();
     }
 
+    // Drop every queued move that hasn't started; the turn in motion finishes. The history then
+    // matches what the cube will show.
+    function dropQueued() {
+      view.clearQueue();
+      var cur = view.currentMove();
+      history.reset(cur ? Cube.applyMove(view.getState(), cur) : view.getState());
+      updateSolved();
+    }
+
     function bind(btn, fn) {
       if (!btn) return;
       btn.addEventListener('click', function () { fn(); btn.blur(); });
@@ -1507,6 +1517,7 @@
       scramble: scramble,
       solve: solve,
       reset: reset,                                   // reset(state?) instant, clears queue + history
+      dropQueued: dropQueued,                         // stop after the turn in motion
       getState: function () { return view.getState(); },          // state after completed moves
       getQueuedState: function () { return history.state.slice(); }, // state after all queued moves
       getHistory: function () { return history.moves.slice(); },
@@ -1831,7 +1842,7 @@
   // hooks.raceStart(targetMs)   - the timer started: start the ghost.
   // hooks.raceCancel()          - the attempt ended before the timer started.
   // Returns { timer, session, keyDown(e), keyUp(e), notifySolved(), newScramble(), isRunning(),
-  //   ghostFinished(ms), raceMessage(text), setGhostBusy(bool) }.
+  //   ghostFinished(ms), ghostStopped(scheduledMs), raceMessage(text), setGhostBusy(bool) }.
   function mount(container, hooks) {
     hooks = hooks || {};
     if (!document.getElementById('tm-style')) {
@@ -1960,7 +1971,7 @@
     function renderRace() {
       raceEl.style.display = race ? '' : 'none';
       if (!race) { raceEl.textContent = ''; return; }
-      raceEl.textContent = race.msg || Race.result(race.user, race.ghost).text;
+      raceEl.textContent = race.msg || Race.result(race.user, race.ghost, race.stoppedAt).text;
       if (race.cap) raceEl.textContent += '  ' + race.cap;
     }
     function newScramble() {
@@ -2097,6 +2108,8 @@
       isRunning: function () { return timer.isRunning(); },
       // The ghost finished the digital cube in ms (from the timer's start).
       ghostFinished: function (ms) { if (race) { race.ghost = ms; renderRace(); } },
+      // I stopped first, so the ghost was stopped too; ms is when it was scheduled to finish.
+      ghostStopped: function (ms) { if (race) { race.stoppedAt = ms; renderRace(); } },
       // A note on the current race, e.g. the target is faster than the animation allows.
       raceMessage: function (text) { if (race) { race.cap = text; renderRace(); } },
       setGhostBusy: function (on) { ghostBusy = !!on; render(); },
@@ -2252,20 +2265,24 @@
   }
 
   // Result of a race: user is the saved entry (or null while running), ghost the ghost's ms (or null
-  // while it is still solving). -> { winner: 'you' | 'ghost' | 'tie' | null, margin: ms | null, text }
-  function result(user, ghost) {
+  // while it is still solving or was stopped). stoppedAt: when I stopped first, the ghost is stopped
+  // too and this is its scheduled finish (ms), which my time is compared against.
+  // -> { winner: 'you' | 'ghost' | 'tie' | null, margin: ms | null, text }
+  function result(user, ghost, stoppedAt) {
     var g = ghost === null || ghost === undefined ? null : ghost;
+    var s = stoppedAt === null || stoppedAt === undefined ? null : stoppedAt;
     if (!user) {
       return { winner: null, margin: null, text: g === null ? 'Racing the ghost…' : 'Ghost finished in ' + Timer.formatTime(g) + '. Keep going!' };
     }
     var u = Timer.effective(user);
     var you = 'You ' + Timer.formatEntry(user);
-    if (g === null) {
-      if (u === Infinity) return { winner: 'ghost', margin: null, text: you + '  ·  Ghost still solving: ghost wins.' };
-      return { winner: 'you', margin: null, text: you + '  ·  Ghost still solving: you won!' };
+    if (g === null && s === null) {   // ended before the ghost started (inspection ran out)
+      if (u === Infinity) return { winner: 'ghost', margin: null, text: you + '  ·  DNF: ghost wins.' };
+      return { winner: 'you', margin: null, text: you + '  ·  You won!' };
     }
-    var both = you + '  ·  Ghost ' + Timer.formatTime(g) + '  ·  ';
-    if (u === Infinity) return { winner: 'ghost', margin: null, text: both + 'Ghost wins.' };
+    var both = you + '  ·  ' + (g !== null ? 'Ghost ' + Timer.formatTime(g) : 'Ghost would have finished at ' + Timer.formatTime(s)) + '  ·  ';
+    if (g === null) g = s;
+    if (u === Infinity) return { winner: 'ghost', margin: null, text: both + 'DNF: ghost wins.' };
     // Compare the times as shown (truncated to 0.01 s), so the margin matches the two numbers.
     var d = Math.abs(Math.floor(u / 10) - Math.floor(g / 10)) * 10;
     if (d === 0) return { winner: 'tie', margin: 0, text: both + 'Tie!' };
@@ -4418,6 +4435,8 @@
   // Race ghost (Feature 6): the digital cube solving itself while the user solves a real one.
   var ghost = { id: 0, solution: null, waiting: false, active: false, plan: null, idx: 0, t0: 0, target: 0 };
   function ghostBusy() { return ghost.waiting || ghost.active; }
+  // A race runs from the space hold (or inspection) until I stop: the ghost stops then too.
+  function racing() { return (timing && ui.timer.isRace()) || ghostBusy(); }
 
   // ---------------------------------------------------------------------------
   // Solver worker. Built from the inlined core + solver source so it works from file://.
@@ -4485,7 +4504,8 @@
   var stale = true;       // hint no longer matches the cube
   var requestId = 0;
 
-  function hintsVisible() { return hintsOn && !timing && !ghostBusy() && tab === 'cube'; }
+  // Hints stay available during a normal timed solve, but not during a race.
+  function hintsVisible() { return hintsOn && !racing() && tab === 'cube'; }
 
   function refreshHints() {
     hintsBtn.textContent = 'Hints: ' + (hintsOn ? 'on' : 'off');
@@ -4628,10 +4648,8 @@
 
   var ui = Timer.mount($('timer'), {
     applyScramble: function (moves) {
-      // The ghost is still solving: scramble once it has finished.
-      if (mounted && ghostBusy()) { cancelPendingScramble(); pendingScramble = moves; return; }
-      // After a solve, leave the solved cube visible for a moment before scrambling.
-      if (mounted && ui && ui.timer.state === 'stopped' && Cube.isSolved(app.getState())) {
+      // After a solve, leave the solved cube (or, after a race, the ghost's cube) visible for a moment.
+      if (mounted && ui && ui.timer.state === 'stopped' && (Cube.isSolved(app.getState()) || ui.timer.isRace())) {
         delayScramble(moves);
         return;
       }
@@ -4640,6 +4658,7 @@
     // Inspection, the space hold and the solve itself all count as timing.
     onActiveChange: function (active) {
       timing = active;
+      if (!active) stopGhost();   // I stopped (or DNF'd) first: the ghost stops where it is
       updateBusy();
     },
     raceBlocked: function () {
@@ -4667,17 +4686,16 @@
     raceCancel: function () { ghost.id++; ghost.waiting = false; updateBusy(); }
   });
 
-  // Buttons, tabs, hints and keys while timing or racing. During a race the cube keys are off too,
-  // until the ghost has finished.
+  // Buttons, tabs and keys while timing or racing. Hints and the cube keys are off only in a race.
   function updateBusy() {
-    var racing = (timing && ui.timer.isRace()) || ghostBusy();
-    var busy = timing || racing;
+    var race = racing();
+    var busy = timing || race;
     app.setButtonsEnabled(!busy);
     tabAlgs.disabled = busy;
     tabScan.disabled = busy;
-    hintsBtn.disabled = busy;
+    hintsBtn.disabled = race;
     keysBtn.disabled = busy;
-    app.setKeysEnabled(tab === 'cube' && !racing && !keysPanel.isOpen());
+    app.setKeysEnabled(tab === 'cube' && !race && !keysPanel.isOpen());
     ui.setGhostBusy(ghostBusy());
     refreshHints();
   }
@@ -4708,7 +4726,16 @@
     ghost.active = false;
     ui.ghostFinished(performance.now() - ghost.t0);
     updateBusy();
-    if (pendingScramble && timerIdle()) delayScramble(pendingScramble);
+  }
+  // My timer stopped while the ghost was still solving: freeze the digital cube where it is
+  // (the turn in motion finishes, nothing else plays) and report the ghost's scheduled finish.
+  function stopGhost() {
+    if (!ghostBusy()) return;
+    var at = ghost.active ? ghost.plan.total : ghost.target;   // no plan yet: the target
+    ghost.id++;                // drop a solution still being worked out
+    ghost.waiting = ghost.active = false;
+    app.dropQueued();
+    ui.ghostStopped(at);
   }
   mounted = true;
   applyTimerScramble(ui.timer.scramble);   // the cube matches the scramble shown on load
@@ -4767,7 +4794,6 @@
   window.addEventListener('keydown', function (e) {
     if (isSpace(e)) {
       e.preventDefault();
-      if (tab === 'cube' && timerIdle() && ghostBusy()) return;   // the ghost is still solving
       if (tab === 'cube' && timerIdle() && (scrambleTimer || scrambling)) {
         // Don't start inspection or a hold until the next scramble is on the cube.
         if (scrambleTimer) applyTimerScramble(pendingScramble);
@@ -4781,7 +4807,7 @@
     if (e.key === 'Escape') { ui.keyDown(e); return; }
     if (e.repeat || e.ctrlKey || e.metaKey) return;
     if (e.target && e.target.tagName === 'INPUT') return;     // typing a race target
-    if ((timing && ui.timer.isRace()) || ghostBusy()) return;  // racing: the cube is busy
+    if (racing()) return;   // racing: the cube keys and H are off
     var action = keyAction(e);
     if (action === 'hints') { e.preventDefault(); if (!hintsBtn.disabled) toggleHints(); return; }
     // A cube key queues a move: the layer highlight would be stale while it animates,

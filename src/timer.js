@@ -302,7 +302,7 @@
   // hooks.raceStart(targetMs)   - the timer started: start the ghost.
   // hooks.raceCancel()          - the attempt ended before the timer started.
   // Returns { timer, session, keyDown(e), keyUp(e), notifySolved(), newScramble(), isRunning(),
-  //   ghostFinished(ms), raceMessage(text), setGhostBusy(bool) }.
+  //   ghostFinished(ms), ghostStopped(scheduledMs), raceMessage(text), setGhostBusy(bool) }.
   function mount(container, hooks) {
     hooks = hooks || {};
     if (!document.getElementById('tm-style')) {
@@ -431,7 +431,7 @@
     function renderRace() {
       raceEl.style.display = race ? '' : 'none';
       if (!race) { raceEl.textContent = ''; return; }
-      raceEl.textContent = race.msg || Race.result(race.user, race.ghost).text;
+      raceEl.textContent = race.msg || Race.result(race.user, race.ghost, race.stoppedAt).text;
       if (race.cap) raceEl.textContent += '  ' + race.cap;
     }
     function newScramble() {
@@ -568,6 +568,8 @@
       isRunning: function () { return timer.isRunning(); },
       // The ghost finished the digital cube in ms (from the timer's start).
       ghostFinished: function (ms) { if (race) { race.ghost = ms; renderRace(); } },
+      // I stopped first, so the ghost was stopped too; ms is when it was scheduled to finish.
+      ghostStopped: function (ms) { if (race) { race.stoppedAt = ms; renderRace(); } },
       // A note on the current race, e.g. the target is faster than the animation allows.
       raceMessage: function (text) { if (race) { race.cap = text; renderRace(); } },
       setGhostBusy: function (on) { ghostBusy = !!on; render(); },

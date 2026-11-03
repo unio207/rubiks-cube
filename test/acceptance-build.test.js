@@ -103,15 +103,19 @@ check('app: Space keyup always preventDefault', /if \(!isSpace\(e\)\) return;\s*
 var algtab = fs.readFileSync(path.join(root, 'src', 'algtab.js'), 'utf8');
 check('algtab control buttons blur after click', /b\.blur\(\); fn\(\);/.test(algtab));
 check('app: notifySolved on any solved finished move', /if \(Cube\.isSolved\(state\)\) ui\.notifySolved\(\);/.test(appSrc));
-check('app: inspection/hold/running updates the busy state', /onActiveChange: function \(active\) \{\s*timing = active;\s*updateBusy\(\);/.test(appSrc));
-check('app: timing or racing disables Scramble/Solve/Reset, Algorithms, Scan and Hints',
-  /var busy = timing \|\| racing;\s*app\.setButtonsEnabled\(!busy\);\s*tabAlgs\.disabled = busy;\s*tabScan\.disabled = busy;\s*hintsBtn\.disabled = busy;/.test(appSrc));
-check('app: racing disables the cube keys', /app\.setKeysEnabled\(tab === 'cube' && !racing && !keysPanel\.isOpen\(\)\)/.test(appSrc));
+check('app: inspection/hold/running updates the busy state, and stopping stops the ghost',
+  /onActiveChange: function \(active\) \{\s*timing = active;\s*if \(!active\) stopGhost\(\);[^\n]*\s*updateBusy\(\);/.test(appSrc));
+check('app: a race lasts from the hold until I stop (or the ghost, if it is somehow still going)',
+  /function racing\(\) \{ return \(timing && ui\.timer\.isRace\(\)\) \|\| ghostBusy\(\); \}/.test(appSrc));
+check('app: timing or racing disables Scramble/Solve/Reset, Algorithms, Scan and Keys; only racing disables Hints',
+  /var race = racing\(\);\s*var busy = timing \|\| race;\s*app\.setButtonsEnabled\(!busy\);\s*tabAlgs\.disabled = busy;\s*tabScan\.disabled = busy;\s*hintsBtn\.disabled = race;\s*keysBtn\.disabled = busy;/.test(appSrc));
+check('app: racing disables the cube keys', /app\.setKeysEnabled\(tab === 'cube' && !race && !keysPanel\.isOpen\(\)\)/.test(appSrc));
+check('app: racing ignores the cube keys and H', /if \(racing\(\)\) return;/.test(appSrc));
 check('app: first scramble applied after mount', /mounted = true;\s*applyTimerScramble\(ui\.timer\.scramble\);/.test(appSrc));
 check('app: Scramble/Solve/Reset and cube keys cancel a pending post-solve scramble', (appSrc.match(/cancelPendingScramble\(\)/g) || []).length >= 5);
 check('app: delayed scramble only applies when timer idle/stopped', /if \(timerIdle\(\)\) applyTimerScramble\(moves\)/.test(appSrc));
 check('algtab: no extra hint paragraph on cards', algtab.indexOf('at-hint') < 0);
-check('app: hints hidden while timing', /function hintsVisible\(\) \{ return hintsOn && !timing && !ghostBusy\(\) && tab === 'cube'; \}/.test(appSrc));
+check('app: hints hidden while racing, not during a normal timed solve', /function hintsVisible\(\) \{ return hintsOn && !racing\(\) && tab === 'cube'; \}/.test(appSrc));
 
 console.log('acceptance-build: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
