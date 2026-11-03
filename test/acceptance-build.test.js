@@ -14,7 +14,7 @@ function check(name, ok, info) {
 }
 var root = path.join(__dirname, '..');
 var out = cp.execFileSync(process.execPath, [path.join(root, 'tools', 'build.js')], { encoding: 'utf8' });
-check('build ran', /inlined 11 file\(s\)/.test(out), out);
+check('build ran', /inlined 12 file\(s\)/.test(out), out);
 var html = fs.readFileSync(path.join(root, 'rubiks-cube.html'), 'utf8');
 
 var scripts = [], re = /<script([^>]*)>([\s\S]*?)<\/script>/g, m;
@@ -25,7 +25,7 @@ check('external script is cdnjs Three.js r128',
   ext[0] && /src="https:\/\/cdnjs\.cloudflare\.com\/ajax\/libs\/three\.js\/r128\/three\.min\.js"/.test(ext[0].attrs));
 check('no stylesheet links', !/<link[^>]+stylesheet/i.test(html));
 var inline = scripts.filter(function (s) { return !/\bsrc=/.test(s.attrs); });
-check('11 inline scripts', inline.length === 11, inline.length);
+check('12 inline scripts', inline.length === 12, inline.length);
 inline.forEach(function (s, i) {
   var ok = true; try { new Function(s.code); } catch (e) { ok = e.message; }
   check('inline script ' + i + ' parses', ok === true, ok);
@@ -37,15 +37,24 @@ check('core is a running script', core && !/type=/.test(core.attrs));
 
 // Worker body, exactly as app.js assembles it, in a sandbox with only `self`.
 var appSrc = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
-var body = core.code + '\n;\n' + solver.code + '\n;self.onmessage = function (e) {\n' +
-  '  var out = { id: e.data.id };\n' +
-  '  try { out.hint = Solver[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
-  '  self.postMessage(out);\n' + '};\n';
-check('app.js builds the worker body the same way', appSrc.indexOf("'  try { out.hint = Solver[e.data.fn](e.data.state); }") >= 0);
+function workerBody(code, name) {
+  return core.code + '\n;\n' + code + '\n;self.onmessage = function (e) {\n' +
+    '  var out = { id: e.data.id };\n' +
+    '  try { out.hint = ' + name + '[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
+    '  self.postMessage(out);\n' + '};\n';
+}
+function sandbox(body, replies) {
+  var sb = { self: null }; sb.self = sb; sb.postMessage = function (x) { replies.push(x); };
+  vm.createContext(sb);
+  vm.runInContext(body, sb);
+  return sb;
+}
+check('app.js builds the worker body the same way',
+  appSrc.indexOf("'  try { out.hint = ' + name + '[e.data.fn](e.data.state); }") >= 0 &&
+  appSrc.indexOf("$('src-core').textContent + '\\n;\\n' + $(id).textContent") >= 0);
+check('app.js: solver and scramble workers', /makeWorker\('src-solver', 'Solver'\)/.test(appSrc) && /makeWorker\('src-twophase', 'TwoPhase'\)/.test(appSrc));
 var replies = [];
-var sb = { self: null }; sb.self = sb; sb.postMessage = function (x) { replies.push(x); };
-vm.createContext(sb);
-vm.runInContext(body, sb);
+var sb = sandbox(workerBody(solver.code, 'Solver'), replies);
 var C = require('../src/core.js');
 var seed = 31337;
 function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
@@ -72,6 +81,24 @@ for (var i = 0; i < 20; i++) {
 check('worker solve reaches solved for 20 scrambles', solveOk);
 check('worker solve < 1000 ms', worstSolve < 1000, worstSolve);
 console.log('worker sandbox: worst solve ' + worstSolve + ' ms');
+
+// Scramble worker (two-phase, for loaded cubes): text/plain on the page, answers in its sandbox.
+var twophase = inline.filter(function (s) { return /id="src-twophase"/.test(s.attrs); })[0];
+check('twophase is type=text/plain (not run on page)', twophase && /type="text\/plain"/.test(twophase.attrs));
+var tpReplies = [];
+var tpSb = sandbox(workerBody(twophase.code, 'TwoPhase'), tpReplies);
+var tpOk = true, tpFirst = 0, tpWorst = 0;
+for (var i = 0; i < 10; i++) {
+  var st = C.applyAlg(C.solvedState(), C.randomScramble(25, { random: rnd }));
+  var t0 = Date.now();
+  tpSb.onmessage({ data: { id: 200 + i, fn: 'scramble', state: st } });
+  if (i === 0) tpFirst = Date.now() - t0; else tpWorst = Math.max(tpWorst, Date.now() - t0);
+  var r = tpReplies[tpReplies.length - 1];
+  if (r.id !== 200 + i || r.error || !C.isEqual(C.applyAlg(C.solvedState(), r.hint.moves), st)) tpOk = false;
+}
+check('scramble worker: each scramble gives its state', tpOk);
+check('scramble worker: first call (table build) < 5 s, later < 500 ms', tpFirst < 5000 && tpWorst < 500, tpFirst + ' / ' + tpWorst);
+console.log('scramble worker sandbox: first ' + tpFirst + ' ms, worst later ' + tpWorst + ' ms');
 
 // ---- Static evidence for browser-only items ----
 var view = fs.readFileSync(path.join(root, 'src', 'view3d.js'), 'utf8');

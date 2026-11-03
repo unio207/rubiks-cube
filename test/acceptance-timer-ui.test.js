@@ -279,5 +279,63 @@ check('inspection over 15 s = +2', last.penalty === '+2', JSON.stringify(last));
   check('race off: solved stops the timer, no race mark', ui3.timer.state === 'stopped' && e5 && !e5.race, JSON.stringify(e5));
 })();
 
+// Loaded cube (Feature 4 "Loading"): the computed scramble is shown, saved with the next solve, then
+// random scrambles resume. Stale results are dropped; a solved cube gets no scramble.
+(function () {
+  var TP = require('../src/twophase.js');
+  var c6 = new Elem('div'), applied6 = [];
+  var ui6 = T.mount(c6, { storage: fakeStorage(), applyScramble: function (m) { applied6.push(m); } });
+  var scr6 = find(c6, function (e) { return e.className === 'tm-scramble'; })[0];
+  var cube = C.applyAlg(C.solvedState(), "R U2 F' L D2 B R' U F2 D' L2 B'");
+  var queued = [];   // compute callbacks waiting for the "worker"
+  var load = T.createLoadScramble({
+    compute: function (state, cb) { queued.push(function () { cb(null, TP.scramble(state)); }); },
+    currentState: function () { return cube; },
+    panel: ui6
+  });
+  var nApplied = applied6.length;
+
+  load(cube);
+  check('load: working note shown', scr6.textContent === T.WORKING && ui6.scrambleWorking(), scr6.textContent);
+  check('load: old timer scramble no longer saved', ui6.timer.scramble === '');
+  queued.shift()();
+  var text = ui6.timer.scramble;
+  check('load: computed scramble shown', text && scr6.textContent === text && !ui6.scrambleWorking(), scr6.textContent);
+  check('load: scramble gives the loaded cube', C.isEqual(C.applyAlg(C.solvedState(), text), cube), text);
+  check('load: the cube is not re-scrambled', applied6.length === nApplied);
+  ui6.keyDown(evt()); advance(320); ui6.keyUp(evt()); advance(5000);
+  ui6.keyDown(evt());   // stop with space (a physical cube was solved)
+  var entry = ui6.session.list()[0];
+  check('load: timed solve saved with the computed scramble', entry && entry.scramble === text, JSON.stringify(entry));
+  check('load: random scrambles resume after the solve',
+    applied6.length === nApplied + 1 && ui6.timer.scramble === applied6[applied6.length - 1].join(' ') && ui6.timer.scramble !== text);
+  ui6.keyUp(evt());
+
+  // Stale: the cube changes before the result arrives -> dropped, note cleared.
+  load(cube);
+  cube = C.applyMove(cube, 'R');
+  queued.shift()();
+  check('stale: result for a changed cube dropped', ui6.timer.scramble === '' && scr6.textContent === '', scr6.textContent);
+  // Stale: a timer scramble replaced the note -> the late result neither shows nor clears it.
+  load(cube);
+  ui6.newScramble();
+  var fresh = ui6.timer.scramble;
+  cube = C.applyAlg(C.solvedState(), fresh);
+  queued.shift()();
+  check('stale: a newer timer scramble is kept', ui6.timer.scramble === fresh && scr6.textContent === fresh);
+  // Stale: a second load supersedes the first.
+  var first = cube;
+  load(first);
+  cube = C.applyAlg(C.solvedState(), "F2 U' B L'");
+  load(cube);
+  queued[1](); queued[0](); queued = [];
+  check('stale: an older load\'s result is dropped',
+    C.isEqual(C.applyAlg(C.solvedState(), ui6.timer.scramble), cube), ui6.timer.scramble);
+  // Solved: no scramble, no worker call.
+  cube = C.solvedState();
+  load(cube);
+  check('solved: empty scramble, nothing computed', ui6.timer.scramble === '' && scr6.textContent === '' && queued.length === 0);
+})();
+
 console.log('acceptance-timer-ui: ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

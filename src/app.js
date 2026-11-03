@@ -53,17 +53,18 @@
   function ghostBusy() { return ghost.waiting || ghost.active; }
 
   // ---------------------------------------------------------------------------
-  // Solver worker. Built from the inlined core + solver source so it works from file://.
+  // Workers, built from the inlined core + module source so they work from file://.
+  // makeWorker(id, name): a worker running the script with that id, which defines the global `name`.
   // ---------------------------------------------------------------------------
-  var solver = (function () {
-    var src = $('src-core').textContent + '\n;\n' + $('src-solver').textContent;
+  function makeWorker(id, name) {
+    var src = $('src-core').textContent + '\n;\n' + $(id).textContent;
     var pending = {};
     var nextId = 1;
     var worker = null;
     try {
       var body = src + '\n;self.onmessage = function (e) {\n' +
         '  var out = { id: e.data.id };\n' +
-        '  try { out.hint = Solver[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
+        '  try { out.hint = ' + name + '[e.data.fn](e.data.state); } catch (err) { out.error = String(err && err.message || err); }\n' +
         '  self.postMessage(out);\n' +
         '};\n';
       var url = URL.createObjectURL(new Blob([body], { type: 'text/javascript' }));
@@ -78,35 +79,39 @@
       fallback();
     }
 
-    // If workers are unavailable, run the solver on the main thread (it is fast, ~ms per hint).
+    // If workers are unavailable, run on the main thread (hints take ~ms; scramble tables ~1 s once).
     function fallback() {
       if (worker) { worker.terminate(); worker = null; }
-      if (!window.Solver) (0, eval)($('src-solver').textContent);
-      Object.keys(pending).forEach(function (id) { run(+id, pending[id].state); });
+      if (!window[name]) (0, eval)($(id).textContent);
+      Object.keys(pending).forEach(function (k) { run(+k, pending[k].state); });
     }
-    function run(id, state) {
+    function run(k, state) {
       setTimeout(function () {
-        var cb = pending[id];
+        var cb = pending[k];
         if (!cb) return;
-        delete pending[id];
-        try { cb(null, window.Solver[cb.fn](state)); } catch (err) { cb(String(err && err.message || err), null); }
+        delete pending[k];
+        try { cb(null, window[name][cb.fn](state)); } catch (err) { cb(String(err && err.message || err), null); }
       }, 0);
     }
 
-    // call('getHint' | 'solve', state, cb(err, result))
-    function call(fn, state, cb) {
-      var id = nextId++;
+    // call(fn, state, cb(err, result))
+    return function call(fn, state, cb) {
+      var k = nextId++;
       cb.state = state;
       cb.fn = fn;
-      pending[id] = cb;
-      if (worker) worker.postMessage({ id: id, fn: fn, state: state });
-      else run(id, state);
-    }
-    return {
-      getHint: function (state, cb) { call('getHint', state, cb); },
-      solve: function (state, cb) { call('solve', state, cb); }
+      pending[k] = cb;
+      if (worker) worker.postMessage({ id: k, fn: fn, state: state });
+      else run(k, state);
     };
-  })();
+  }
+  var solverCall = makeWorker('src-solver', 'Solver');
+  var solver = {
+    getHint: function (state, cb) { solverCall('getHint', state, cb); },
+    solve: function (state, cb) { solverCall('solve', state, cb); }
+  };
+  // Scrambles for loaded cubes (two-phase solver): its own worker, so its one-off table build
+  // never delays hints, Solve or the race ghost.
+  var scrambleCall = makeWorker('src-twophase', 'TwoPhase');
 
   // ---------------------------------------------------------------------------
   // Hint panel
@@ -369,8 +374,17 @@
       scrambling = false;
       app.reset(state);
       invalidateHint();
+      scrambleLoaded(state);
       setTab('cube');
     }
+  });
+
+  // Feature 4 "Loading": the timer shows (and saves with the next solve) a face-turn scramble that
+  // gives the loaded cube. If the cube changes before it arrives, the result is dropped.
+  var scrambleLoaded = Timer.createLoadScramble({
+    compute: function (state, cb) { scrambleCall('scramble', state, cb); },
+    currentState: function () { return app.getQueuedState(); },
+    panel: ui
   });
 
   function setTab(name) {
