@@ -372,11 +372,15 @@
     for (var r = 0; r < 3; r++) {
       for (var c = 0; c < 3; c++) {
         var cx = x0 + (c + 0.5) * cell, cy = y0 + (r + 0.5) * cell, half = cell * frac / 2;
+        // Centre caps often carry a logo in the middle: read the centre from a ring around it.
+        var ring = r === 1 && c === 1, inner = cell * 0.22;
+        if (ring) half = cell * 0.37;
         var rs = [], gs = [], bs = [];
         var step = Math.max(1, Math.floor(half / 6));
         for (var y = Math.round(cy - half); y < cy + half; y += step) {
           for (var x = Math.round(cx - half); x < cx + half; x += step) {
             if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            if (ring && Math.abs(x - cx) < inner && Math.abs(y - cy) < inner) continue;
             var p = (y * w + x) * 4;
             rs.push(data[p]); gs.push(data[p + 1]); bs.push(data[p + 2]);
           }
@@ -449,9 +453,24 @@
   // step k. The holds as instructed are tried first. Otherwise each capture's face comes from its
   // centre colour and its rotation from the shared pieces. The result has white on top, green in front.
   function assemble(captures) {
-    var guided = classify(readingsFromCaptures(captures));
-    if (validCenters(guided)) guided = normalize(guided).state;
-    if (validate(guided).ok) return { state: guided, rearranged: false };
+    var readings = readingsFromCaptures(captures);
+    // How well centre colours fit the centre readings (letters[k] = colour taken for step k's centre).
+    function centreCost(letters) {
+      var c = 0;
+      for (var k = 0; k < 6; k++) c += dist(toLab(fullBright(captures[k][4])), PALETTE_LAB[letters[k]]);
+      return c;
+    }
+    // Each step's centre is taken to be that step's colour (the face letter is its colour), which
+    // ignores logos. The centre readings only overrule it when they fit another orientation far
+    // better, which means the faces aren't on their own steps.
+    var asked = label(balance(readings.map(fullBright)).map(toLab), CENTERS.map(function (i) { return FACES[Math.floor(i / 9)]; }));
+    var raw = classify(readings), guided = validCenters(raw) ? normalize(raw).state : raw;
+    var askedOk = validate(asked).ok, guidedOk = validate(guided).ok;
+    if (askedOk && (!guidedOk || centreCost(STEPS.map(function (st) { return st.face; })) -
+        centreCost(STEPS.map(function (st) { return raw[st.cells[4]]; })) <= 2 * WAY_OFF)) {
+      return { state: asked, rearranged: false };
+    }
+    if (guidedOk) return { state: guided, rearranged: false };
     var guidedScore = validCenters(guided) ? score(guided) : -1;
 
     var flat = [];
@@ -488,14 +507,18 @@
     return { state: best.state, rearranged: true };
   }
 
-  // slotFor(centerRgb, allowed) -> the step in `allowed` whose centre colour is closest to the reading.
-  function slotFor(rgb, allowed) {
-    var lab = toLab(fullBright(rgb)), best = -1, bd = Infinity;
+  // slotFor(centerRgb, allowed, preferred) -> the step in `allowed` whose centre colour is closest to
+  // the reading. With `preferred` (the step being asked for), that step wins unless another allowed
+  // colour is clearly closer: a logo or glare on the centre shouldn't send a face to the wrong step.
+  var WAY_OFF = 25;
+  function slotFor(rgb, allowed, preferred) {
+    var lab = toLab(fullBright(rgb)), best = -1, bd = Infinity, dp = Infinity;
     allowed.forEach(function (k) {
       var d = dist(lab, PALETTE_LAB[STEPS[k].face]);
+      if (k === preferred) dp = d;
       if (d < bd) { bd = d; best = k; }
     });
-    return best;
+    return dp - bd <= WAY_OFF ? preferred : best;
   }
 
   // ---------------------------------------------------------------------------
@@ -567,7 +590,7 @@
     opts = opts || {};
     var STEADY = opts.steady || 3, prev = null, steady = 0, armed = true;
     function faceLike(info) {
-      if (!info.even.every(function (e) { return e >= 0.7; })) return false;
+      if (!info.even.every(function (e, k) { return k === 4 || e >= 0.7; })) return false;   // centre: logos
       var cols = {};
       info.cells.forEach(function (c) { cols[nearestColor(c)] = true; });
       return Object.keys(cols).length >= 2 || info.gaps >= 9;

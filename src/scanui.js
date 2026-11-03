@@ -305,7 +305,7 @@
       });
       var kinds = {};
       cellsRead.forEach(function (c) { kinds[Scan.nearestColor(c)] = true; });
-      var even = info.even.every(function (e) { return e >= 0.7; }) && (Object.keys(kinds).length > 1 || info.gaps >= 9);
+      var even = info.even.every(function (e, k) { return k === 4 || e >= 0.7; }) && (Object.keys(kinds).length > 1 || info.gaps >= 9);
       seenEl.textContent = !even ? 'Camera sees: no face in the guide yet' : 'Camera sees: ' + Cube.COLOR_NAME[Scan.nearestColor(cellsRead[4])] + ' centre' +
         (captures.some(function (c) { return c && Scan.sameFace(cellsRead, c); }) ? ' (already scanned)' : '');
       if (!autoBox.checked || autoDone) { guide.classList.remove('sc-hold'); return; }
@@ -387,7 +387,7 @@
     function capture() {
       var read = readFrame(640);
       if (!read) { camMsg.textContent = 'The camera has no picture yet; try again in a moment.'; return; }
-      var slot = Scan.slotFor(read.cells[4], allowedSlots());
+      var slot = Scan.slotFor(read.cells[4], allowedSlots(), stepIdx);
       captures[slot] = read.cells;
       stepIdx = slot;
       lockCamera();
