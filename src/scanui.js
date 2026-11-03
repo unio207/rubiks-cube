@@ -28,6 +28,10 @@
     '.sc-btns button.sc-main:not(:disabled){background:#24497e;border-color:#3d7bdc}',
     '.sc-errs{margin:0;padding-left:18px;color:#ffb0b0;font-size:13px;line-height:1.45}',
     '.sc-ok{color:#3ddc84;font-size:14px}',
+    '.sc-fly{position:fixed;z-index:50;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:3px;pointer-events:none;box-sizing:border-box}',
+    '.sc-fly i{display:block;border-radius:4px;border:1px solid #0d0e11}',
+    '.sc-land{animation:sc-land 0.45s ease-out}',
+    '@keyframes sc-land{0%{box-shadow:0 0 0 3px #3ddc84}100%{box-shadow:0 0 0 0 transparent}}',
     '.sc-video{position:relative;background:#0d0e11;border-radius:8px;overflow:hidden;width:100%}',
     '.sc-video video{display:block;width:100%;height:auto}',
     '.sc-video video.sc-mirror{transform:scaleX(-1)}',
@@ -395,6 +399,7 @@
       guide.classList.add('sc-flash');
       clearTimeout(flashTimer);
       flashTimer = setTimeout(function () { guide.classList.remove('sc-flash'); }, 500);
+      flyToNet(slot, read.cells);
       var missing = captures.indexOf(null);
       if (missing < 0) {
         var res = Scan.assemble(captures);
@@ -408,6 +413,47 @@
         camMsg.textContent = '';
       }
       renderCam();
+    }
+
+    // Capture animation: the face lifts off the guide and flies into its place in the net, where it
+    // lands as a preview (the final assembly may still turn it).
+    function flyToNet(slot, readCells) {
+      var cols = readCells.map(function (c) { return Scan.nearestColor(c); });
+      var face = Scan.STEPS[slot].cells;   // facelets in the suggested hold
+      function land() {
+        if (captures[slot] !== readCells) return;   // rescanned or reset meanwhile
+        // Once all six are in, the net already holds the assembled cube: just mark where it landed.
+        if (captures.indexOf(null) >= 0) {
+          face.forEach(function (fi, k) { if (k !== 4) net[fi] = cols[k]; });
+          render();
+        }
+        face.forEach(function (fi) {
+          cells[fi].classList.remove('sc-land');
+          void cells[fi].offsetWidth;
+          cells[fi].classList.add('sc-land');
+        });
+      }
+      var reduce = root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var from = guide.getBoundingClientRect(), a = cells[face[0]].getBoundingClientRect(), b = cells[face[8]].getBoundingClientRect();
+      if (reduce || !from.width || !a.width || !guide.animate) { land(); return; }
+      var fly = el('div', 'sc-fly');
+      cols.forEach(function (c, k) {
+        var dot = el('i');
+        dot.style.background = hex(k === 4 ? Scan.STEPS[slot].face : c);
+        fly.appendChild(dot);
+      });
+      fly.style.left = from.left + 'px'; fly.style.top = from.top + 'px';
+      fly.style.width = from.width + 'px'; fly.style.height = from.height + 'px';
+      document.body.appendChild(fly);
+      var to = { left: a.left, top: a.top, width: b.right - a.left, height: b.bottom - a.top };
+      var dx = to.left - from.left, dy = to.top - from.top, sx = to.width / from.width, sy = to.height / from.height;
+      var anim = fly.animate([
+        { transform: 'translate(0,0) scale(1)', boxShadow: '0 0 0 rgba(0,0,0,0)', opacity: 1, offset: 0 },
+        { transform: 'translate(0,-14px) scale(1.06) rotate(-3deg)', boxShadow: '0 18px 30px rgba(0,0,0,0.55)', opacity: 1, offset: 0.25 },
+        { transform: 'translate(' + dx + 'px,' + dy + 'px) scale(' + sx + ',' + sy + ')', boxShadow: '0 0 0 rgba(0,0,0,0)', opacity: 0.9, offset: 1 }
+      ], { duration: 650, easing: 'cubic-bezier(0.5,0,0.3,1)' });
+      fly.style.transformOrigin = '0 0';
+      anim.onfinish = anim.oncancel = function () { fly.remove(); land(); };
     }
 
     startBtn.addEventListener('click', startCamera);

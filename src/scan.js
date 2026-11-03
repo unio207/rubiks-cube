@@ -229,17 +229,17 @@
   // Steps are named by centre colour (standard scheme: the face letter is also its centre's colour).
   var STEPS = [
     { face: 'F', rot: [], title: 'Green',
-      text: 'Green centre facing the camera, white centre on top.' },
+      text: 'Show the face with the green centre, any way up.' },
     { face: 'R', rot: ['y'], title: 'Red',
-      text: 'Red centre facing the camera, white on top (turn the whole cube a quarter turn to the left).' },
+      text: 'Show the face with the red centre, any way up.' },
     { face: 'B', rot: ['y2'], title: 'Blue',
-      text: 'Blue centre facing the camera, white on top (another quarter turn to the left).' },
+      text: 'Show the face with the blue centre, any way up.' },
     { face: 'L', rot: ["y'"], title: 'Orange',
-      text: 'Orange centre facing the camera, white on top (another quarter turn to the left).' },
+      text: 'Show the face with the orange centre, any way up.' },
     { face: 'U', rot: ["x'"], title: 'White',
-      text: 'White centre facing the camera, blue on top (green faces you again, then tip the top toward the camera).' },
+      text: 'Show the face with the white centre, any way up.' },
     { face: 'D', rot: ['x'], title: 'Yellow',
-      text: 'Yellow centre facing the camera, green on top (tip the cube over half a turn).' }
+      text: 'Show the face with the yellow centre, any way up.' }
   ];
   (function () {
     var ids = []; for (var i = 0; i < 54; i++) ids.push(String(i));
@@ -320,7 +320,12 @@
   // Colours for all 54 Lab readings, given the centre colours: balanced assignment to the centres,
   // refined against each colour's mean. Only which stickers share a face matters, not where they are.
   function label(labs, letters) {
-    var centerLab = CENTERS.map(function (i) { return labs[i]; });
+    // A centre reading way off its own colour (a logo, glare) is a bad reference: use the palette.
+    var centerLab = CENTERS.map(function (i, k) {
+      var own = dist(labs[i], PALETTE_LAB[letters[k]]), bestD = Infinity;
+      COLOR_LETTERS.forEach(function (c) { bestD = Math.min(bestD, dist(labs[i], PALETTE_LAB[c])); });
+      return own - bestD > WAY_OFF ? PALETTE_LAB[letters[k]] : labs[i].map(function (v, j) { return (v + PALETTE_LAB[letters[k]][j]) / 2; });
+    });
     var out = assign(labs, letters, centerLab);
     // A single centre is a noisy reference: refine against the mean of each colour's 9 stickers.
     for (var iter = 0; iter < 4; iter++) {
@@ -482,6 +487,14 @@
       for (var j = 0; j < 6; j++) cost += dist(labs[j * 9 + 4], PALETTE_LAB[perm[j]]);
       return { perm: perm, cost: cost };
     }).sort(function (a, b) { return a.cost - b.cost; }).slice(0, 6);
+    // The steps' own colours are always tried too: each capture went to the step of its centre
+    // colour, so this is usually right even when a logo spoils a centre reading.
+    var own = STEPS.map(function (st) { return st.face; });
+    if (!cands.some(function (c) { return c.perm.join('') === own.join(''); })) {
+      var oc = 0;
+      for (var j0 = 0; j0 < 6; j0++) oc += dist(labs[j0 * 9 + 4], PALETTE_LAB[own[j0]]);
+      cands.push({ perm: own, cost: oc });
+    }
 
     var best = null;
     cands.forEach(function (cand) {
@@ -499,7 +512,9 @@
         var sc = realPieces(s);
         if (best && sc < best.score) continue;
         if (sc === 20) sc += validate(s).ok ? 1 : 0;
-        if (!best || sc > best.score) best = { score: sc, state: s.slice(), perm: perm, r: r.slice() };
+        if (!best || sc > best.score || sc === best.score && cand.cost < best.cost) {
+          best = { score: sc, cost: cand.cost, state: s.slice(), perm: perm, r: r.slice() };
+        }
       }
     });
     if (!best || best.score <= guidedScore) return { state: guided, rearranged: false };
