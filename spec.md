@@ -176,15 +176,15 @@ Acceptance for Feature 8:
 - Bindings survive serialise/parse; corrupt or invalid storage gives the defaults.
 - In a browser: rebinding U to J and U' to F makes J turn U and F turn U'; the bindings survive a reload; Space still runs the timer.
 
-## Feature 9: Angled view (camera tracking milestone 2) — DRAFT, not approved
+## Feature 9: Angled view (camera tracking milestone 2)
 Read the cube from the angle that camera tracking will use: the camera in front of the cube and a little above it, showing the top and front faces (18 stickers) in one frame. The visible result is a faster scan, three holds instead of six. Under the hood it is the reading every later tracking milestone needs.
 
 - **Quick scan.** A "Quick scan (3 holds)" option in the Scan tab's camera card (off by default; the six-face scan stays as it is). Each hold shows two faces, named by centre colour:
-  1. White on top, green in front.
-  2. Red on top, blue in front.
-  3. Yellow on top, orange in front.
+  1. White and green showing.
+  2. Red and blue showing.
+  3. Yellow and orange showing.
 
-  Together they cover all six faces. Each hold is auto-captured like Feature 5 (steady, sticker-like, not a repeat), and the third fills the net through the same classification and assembly as the six-face scan, including logo-tolerant centres and holds that are turned or out of order.
+  Together they cover all six faces. As in the six-face scan, the holds are suggestions: either face of a pair can be on top, any way up, in any order. Which faces are shown, and how each is turned, is worked out from the centre colours and the shared pieces. The steps say which centre colours are still missing. Each hold is auto-captured like Feature 5 (steady, sticker-like, not a repeat), and the third fills the net through the same classification and assembly as the six-face scan, including logo-tolerant centres and holds that are turned or out of order.
 - **The outline.** Two shapes over the video: a square for the front face and, above it, a trapezoid narrowing toward the back for the top face, both split 3×3. The outline **snaps to the cube**. Within a range of positions, sizes and downward tilts (about 15° to 50°) around where it's drawn, it uses the fit whose 18 cells look most like stickers: even colour inside, dark gaps between. It's drawn where it snapped, so I can see it has locked on. When nothing fits well, it's shown dashed and nothing is read.
 - **Reading.** Each face is flattened with a perspective transform (homography) from its fitted shape, and each sticker is read the same way as the six-face scan (median of the middle, a ring for the centre). The top and front are often lit differently, so readings are scaled to full brightness before matching, as now. When this cube has been scanned before in this session, its scanned colours are used as the reference.
 - **"Settled" detection.** A view is settled when the cube has been steady for about 0.25 s, all 18 cells are even, and the dark gaps are where the grid says. A layer that's part-turned breaks the grid, so a mid-turn cube is not settled. A small indicator under the video shows settled or not, next to a live mini-view of the 18 stickers read. Later milestones use this to know when the cube can be read.
