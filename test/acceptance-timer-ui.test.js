@@ -264,8 +264,16 @@ check('inspection over 15 s = +2', last.penalty === '+2', JSON.stringify(last));
   ui3.keyDown(evt()); advance(320); ui3.keyUp(evt()); advance(2000);
   check('race: PB is the target', calls.join() === 'arm,start:8500', calls.join());
   var x = esc(); ui3.keyDown(x);
+  ui3.ghostStopped(8500);   // app.js stops the ghost when the timer stops
   check('race: escape stops as DNF', ui3.session.list()[1].penalty === 'DNF' && ui3.session.list()[1].race === true);
-  check('race: DNF with the ghost still solving -> ghost wins', /DNF.*ghost wins/.test(raceText()), raceText());
+  check('race: DNF with the ghost stopped -> ghost wins', /You DNF\(2\.00\).*Ghost would have finished at 8\.50.*DNF: ghost wins/.test(raceText()), raceText());
+
+  // Stopping first: the result is against the ghost's scheduled finish.
+  ui3.keyDown(evt()); advance(320); ui3.keyUp(evt()); advance(3000);
+  ui3.keyDown(evt()); ui3.keyUp(evt());
+  ui3.ghostStopped(8500);
+  check('race: stopped first -> won against the scheduled finish',
+    /You 3\.00.*Ghost would have finished at 8\.50.*You won by 5\.50 s\./.test(raceText()) && ui3.session.list()[2].race === true, raceText());
 
   // Reload keeps the race settings and the race mark.
   var ui4 = T.mount(new Elem('div'), { storage: st, applyScramble: function () {} });
@@ -275,7 +283,7 @@ check('inspection over 15 s = +2', last.penalty === '+2', JSON.stringify(last));
   // Race off: solving stops the timer again, entry has no race mark.
   raceBox.checked = false; raceBox.fire('change');
   ui3.keyDown(evt()); advance(320); ui3.keyUp(evt()); advance(3000); ui3.notifySolved();
-  var e5 = ui3.session.list()[2];
+  var e5 = ui3.session.list()[3];
   check('race off: solved stops the timer, no race mark', ui3.timer.state === 'stopped' && e5 && !e5.race, JSON.stringify(e5));
 })();
 

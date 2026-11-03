@@ -16,11 +16,13 @@ A single-file browser Rubik's cube game: a 3D cube with CFOP hints, an Algorithm
 | 2. Algorithms tab, 20 algs, All/F2L/OLL/PLL filter | Feature 2 | Done, on `main` |
 | 3. Timer (inspection, ao5/ao12, localStorage) | Feature 3 | Done, on `main` |
 | 4. Scan tab: net editor, validator, webcam scan | Feature 4 | Done, on `main` (merged 2026-11-02) |
-| 5. Low-effort scanning: auto-capture, colour-guided steps, any order/rotation, exposure lock | Feature 5 | Done, on `main` (PRs #1, #2) |
+| 5. Low-effort scanning: auto-capture, colour-guided steps (any way up), any order, logo-tolerant centres, capture animation, Reset scan, exposure lock | Feature 5 | Done; latest parts on branch `claude/auto-scan-discussion-z453a0` |
 | 6. Race: the digital cube solves itself at a human CFOP pace (set target or PB) while you solve a real one | Feature 6 | Done, on `main` (PR #3) |
+| 6b. Race ends: stopping first or Escape freezes the ghost; hints allowed in non-race timed solves | Feature 6 (and 1, 3) | Done on branch `claude/auto-scan-discussion-z453a0` |
 | 7. Notation cards in the Algorithms tab (E and S added to core) | Feature 7 | Done, on `main` (PR #3) |
 | 8. Custom keybinds (Keys panel from the help line, `src/keymap.js`) | Feature 8 | Done, on `main` (PR #3) |
 | Load onto cube works out a WCA face-turn scramble (two-phase solver in its own worker), shown and saved by the timer | Feature 4 "Loading" (added later) | Done, on branch (not merged) |
+| 9. Angled view / quick scan (camera tracking milestone 2) | Feature 9 | Approved, in progress |
 | Camera move tracking (7 milestones) | Roadmap: camera move tracking | Planned, nothing built |
 
 Open items:

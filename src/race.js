@@ -131,20 +131,24 @@
   }
 
   // Result of a race: user is the saved entry (or null while running), ghost the ghost's ms (or null
-  // while it is still solving). -> { winner: 'you' | 'ghost' | 'tie' | null, margin: ms | null, text }
-  function result(user, ghost) {
+  // while it is still solving or was stopped). stoppedAt: when I stopped first, the ghost is stopped
+  // too and this is its scheduled finish (ms), which my time is compared against.
+  // -> { winner: 'you' | 'ghost' | 'tie' | null, margin: ms | null, text }
+  function result(user, ghost, stoppedAt) {
     var g = ghost === null || ghost === undefined ? null : ghost;
+    var s = stoppedAt === null || stoppedAt === undefined ? null : stoppedAt;
     if (!user) {
       return { winner: null, margin: null, text: g === null ? 'Racing the ghost…' : 'Ghost finished in ' + Timer.formatTime(g) + '. Keep going!' };
     }
     var u = Timer.effective(user);
     var you = 'You ' + Timer.formatEntry(user);
-    if (g === null) {
-      if (u === Infinity) return { winner: 'ghost', margin: null, text: you + '  ·  Ghost still solving: ghost wins.' };
-      return { winner: 'you', margin: null, text: you + '  ·  Ghost still solving: you won!' };
+    if (g === null && s === null) {   // ended before the ghost started (inspection ran out)
+      if (u === Infinity) return { winner: 'ghost', margin: null, text: you + '  ·  DNF: ghost wins.' };
+      return { winner: 'you', margin: null, text: you + '  ·  You won!' };
     }
-    var both = you + '  ·  Ghost ' + Timer.formatTime(g) + '  ·  ';
-    if (u === Infinity) return { winner: 'ghost', margin: null, text: both + 'Ghost wins.' };
+    var both = you + '  ·  ' + (g !== null ? 'Ghost ' + Timer.formatTime(g) : 'Ghost would have finished at ' + Timer.formatTime(s)) + '  ·  ';
+    if (g === null) g = s;
+    if (u === Infinity) return { winner: 'ghost', margin: null, text: both + 'DNF: ghost wins.' };
     // Compare the times as shown (truncated to 0.01 s), so the margin matches the two numbers.
     var d = Math.abs(Math.floor(u / 10) - Math.floor(g / 10)) * 10;
     if (d === 0) return { winner: 'tie', margin: 0, text: both + 'Tie!' };

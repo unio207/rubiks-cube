@@ -97,6 +97,15 @@
       updateSolved();
     }
 
+    // Drop every queued move that hasn't started; the turn in motion finishes. The history then
+    // matches what the cube will show.
+    function dropQueued() {
+      view.clearQueue();
+      var cur = view.currentMove();
+      history.reset(cur ? Cube.applyMove(view.getState(), cur) : view.getState());
+      updateSolved();
+    }
+
     function bind(btn, fn) {
       if (!btn) return;
       btn.addEventListener('click', function () { fn(); btn.blur(); });
@@ -127,6 +136,7 @@
       scramble: scramble,
       solve: solve,
       reset: reset,                                   // reset(state?) instant, clears queue + history
+      dropQueued: dropQueued,                         // stop after the turn in motion
       getState: function () { return view.getState(); },          // state after completed moves
       getQueuedState: function () { return history.state.slice(); }, // state after all queued moves
       getHistory: function () { return history.moves.slice(); },

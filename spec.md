@@ -25,7 +25,7 @@ Full-window 3D cube on a dark background, keyboard controlled, with Scramble/Sol
 - A Hints button in the top bar shows its on/off state. The H key also toggles it.
 - The hint panel shows: the current stage, the goal of the next step in plain words, the case name if there is one, and the move sequence with the next move marked. The layer for the next move is highlighted on the 3D cube.
 - If I play the suggested move, the panel advances. If I play any other move, the hint recomputes.
-- Hints are hidden while a timed solve is running.
+- Hints stay available during a normal timed solve (inspection and timing): the Hints button and H work, and the panel shows and updates as usual. During a race (Feature 6) they are disabled and hidden. *(Changed later; originally hints were hidden during every timed solve.)*
 - Stages are checked in this order (the first one not done is the current stage):
   1. Orientation: white center must be on D. Hint the rotation that puts it there.
   2. Cross: 4 white edges on D, each matching its side center. Hint a move sequence, ideally optimal (8 moves max).
@@ -69,7 +69,7 @@ Verify every alg in code: starting from its own case state, it must leave its ta
 5. The timer stops when the cube is solved (any orientation) or when I press space. Escape stops it as a DNF.
 - Session list, newest first: each time with +2, DNF and delete actions, plus its scramble. Show current, best, ao5, ao12 and mean. Averages use WCA rules: drop best and worst; more than one DNF in an ao5 makes it a DNF.
 - Save times in localStorage, wrapped in try/catch.
-- Face and rotation keys keep working while timing. Space is reserved for the timer. During a timed solve, hints are hidden and Solve/Scramble/Reset are disabled. Releasing space must never trigger a focused button.
+- Face and rotation keys keep working while timing. Space is reserved for the timer. During a timed solve, Solve/Scramble/Reset, the Algorithms and Scan tabs and the Keys button are disabled; hints stay available (not during a race, see Feature 6). Releasing space must never trigger a focused button.
 
 ## Feature 4: Scan a real cube (added after the first build)
 A third top bar tab, Cube | Algorithms | Scan, loads a physical cube's state onto the 3D cube so hints and Solve work on it.
@@ -124,8 +124,10 @@ After scrambling, or loading a scanned cube, race the digital cube with a real o
 - **The ghost.** On release, the digital cube solves itself from its current state with the `Solver.solve` solution, while my timer runs.
 - **Pacing.** A human-like CFOP rhythm, not a constant rate: a recognition pause before each stage (cross, each F2L pair, OLL, PLL, AUF); slower turning in the cross and F2L, fast bursts inside last-layer algorithms; small random variation from move to move; double turns and cube rotations take longer than quarter turns. Everything is scaled so the ghost finishes within a few percent of the target.
 - **Target time.** A set time in seconds (default 20), remembered in localStorage with the Race and PB choices (wrapped in try/catch). "Use my PB" uses the best non-DNF single in the session, including +2. With no PB yet, the set time is used and the panel says so. Turns can't animate faster than about 60 ms (90 ms for double turns and rotations); if the target is faster than that allows for this solution, the panel says so and the ghost takes the fastest time it can.
-- **During a race.** Face and rotation keys don't move the digital cube. Scramble, Solve, Reset, Hints and the other tabs are disabled, as during a timed solve, until both the ghost and I have finished. The digital cube reaching solved doesn't stop my timer: I stop it with space, and Escape stops it as a DNF, as in Feature 3.
-- **Result.** When the ghost finishes, the panel shows its time while my timer keeps running. When I stop, it shows both times, who won and by how much (a DNF loses; if the ghost is still solving, I won and its time appears when it finishes). My time is saved to the session as a normal solve, marked "race" in the list. The ghost's time is not saved and isn't in the session stats.
+- **During a race.** From the space hold (or inspection) until the race ends, face and rotation keys don't move the digital cube, and Scramble, Solve, Reset, Keys and the other tabs are disabled. Hints are disabled and hidden for the whole race (the Hints button and H do nothing). The digital cube reaching solved doesn't stop my timer: I stop it with space, and Escape stops it as a DNF, as in Feature 3.
+- **The race ends when I stop.** If the ghost is still solving when I press space or Escape, it stops where it is: the digital cube freezes mid-solve (the turn already in motion finishes), no more ghost moves play and nothing stays queued. If the ghost finished first, my timer keeps running until I stop it.
+- **Result.** When the ghost finishes, the panel shows its time while my timer keeps running. When I stop, it shows both times, who won and by how much. If I stopped first, my time is compared with the ghost's scheduled finish: "You 9.39 · Ghost would have finished at 12.00 · You won by 2.61 s." A DNF (Escape) loses: "You DNF(4.00) · Ghost would have finished at 12.00 · DNF: ghost wins." My time is saved to the session as a normal solve (or a DNF), marked "race" in the list. The ghost's time is not saved and isn't in the session stats.
+- **After a race.** The cube stays as it was left (frozen mid-solve, or solved if the ghost finished), hints and all the controls are enabled again, and the timer's next scramble is applied after the usual post-solve delay.
 - If the cube is already solved when I try to start a race, it doesn't start, and the panel says to scramble first.
 
 Acceptance for Feature 6:
@@ -134,6 +136,8 @@ Acceptance for Feature 6:
 - The PB lookup skips DNFs, counts +2, and returns none for an empty or all-DNF session; the target falls back to the set time with a note.
 - In race mode, the cube becoming solved doesn't stop the timer; space does, and the entry is saved with its race mark and survives a reload; stats are unchanged by the ghost.
 - In a browser: scramble, Race with an 8 s target, release space: the digital cube solves in about 8 s, my timer keeps running after it, and pressing space shows both times and the winner.
+- Stopping first with space while the ghost is still solving: my timer stops at once, no ghost move plays afterwards, nothing is queued, and the result is against the ghost's scheduled finish. Escape does the same and saves a DNF with the race mark.
+- Hints are unavailable for the whole race (inspection, hold, solving) and available during a non-race timed solve. Scramble, Solve, Reset, Hints, Keys and the tabs are enabled again after each kind of race end (I stop first, Escape, the ghost first).
 
 ## Feature 7: Notation (added later, inside the Algorithms tab)
 "Add a tab in the Algorithms tab that goes over all notation, with clear visualization of each, like F, F', f, etc."
